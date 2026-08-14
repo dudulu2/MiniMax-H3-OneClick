@@ -1,0 +1,102 @@
+{
+  "native_h3_contract": {
+    "fps": 24,
+    "frame_grid": "17n+5",
+    "trained_frame_range": [124, 362],
+    "max_pixel_area": 2088960,
+    "max_16_9_resolution": [1920, 1088],
+    "vram_caution_pixel_area": 1032192,
+    "batch_size": 1
+  },
+  "audio_modes": ["native", "reference_only", "lock_source", "remix_source"],
+  "task_modes": ["T2VA", "I2VA", "FL2VA", "L2VA", "Ref2VA", "Hybrid"],
+  "nodes": [
+    "MiniMaxH3AudioConditioningT8",
+    "MiniMaxH3AudioLatentControlT8",
+    "MiniMaxH3DurationPlannerT8",
+    "MiniMaxH3AudioWindowT8",
+    "MiniMaxH3PromptTagsT8",
+    "MiniMaxH3AVDecodeT8",
+    "MiniMaxH3AudioMixT8",
+    "MiniMaxH3OutputTrimT8",
+    "MiniMaxH3PreflightT8",
+    "MiniMaxH3DualClockSamplerT8",
+    "MiniMaxH3MultiRateSamplerEXPT8",
+    "MiniMaxH3StillConditioningT8",
+    "MiniMaxH3StillPreflightT8",
+    "MiniMaxH3StillDecodeT8"
+  ],
+  "sampling": {
+    "algorithm": "selectable sampler and scheduler with a backward-compatible dual-clock default",
+    "default_steps": 4,
+    "default_sampler": "dual_clock_euler",
+    "default_scheduler": "native_flow",
+    "video_shift": 12.0,
+    "audio_shift": 3.0,
+    "sigma_grid": "native shifted uniform flow",
+    "sampler_options": "current comfy.samplers.SAMPLER_NAMES when native ModelSamplingAV is available",
+    "scheduler_options": "current comfy.samplers.SCHEDULER_NAMES",
+    "alternate_sampler_protocol": "native FLOW_AV carry/scale; unavailable on legacy ComfyUI",
+    "legacy_workflow_compatibility": "new optional widgets are appended after steps/shift_video/shift_audio",
+    "comfyui_audio_velocity_compatibility": [
+      "legacy slope-scaled H3 velocity",
+      "current FLOW_AV raw H3 audio velocity"
+    ],
+    "custom_audio_scale": 1.0
+  },
+  "experimental_sampling": {
+    "node": "MiniMaxH3MultiRateSamplerEXPT8",
+    "algorithm": "multi-rate dual-clock Euler",
+    "default_video_steps": 4,
+    "default_audio_steps": 8,
+    "model_evaluations": "audio_steps",
+    "video_update_policy": "one frozen-derivative macro update per video step",
+    "comfyui_audio_velocity_compatibility": [
+      "legacy slope-scaled H3 velocity",
+      "current FLOW_AV raw H3 audio velocity"
+    ],
+    "status": "experimental; does not replace or modify the stable dual-clock node"
+  },
+  "experimental_still_image_edit": {
+    "conditioning_node": "MiniMaxH3StillConditioningT8",
+    "preflight_node": "MiniMaxH3StillPreflightT8",
+    "decode_node": "MiniMaxH3StillDecodeT8",
+    "checkpoint_family": "MiniMax H3 Ref2VA",
+    "target_modes": [
+      "direct_1_frame",
+      "micro_video_5_frames",
+      "short_video_22_frames",
+      "trained_124_frames"
+    ],
+    "audio_strategies": ["generate_and_discard", "lock_silence"],
+    "total_reference_picture_limit": 9,
+    "frontend_workflow": "examples/workflows/H3_Still_Edit_22Frames_EXP.json",
+    "status": "experimental semantic reference editing; not mask-based pixel editing",
+    "validated_probe": {
+      "checkpoint": "minimax_h3_ref2va_pruned_int8_convrot.safetensors",
+      "resolution": [512, 512],
+      "target_mode": "direct_1_frame",
+      "steps": 20,
+      "result": "successful single reference color/material edit",
+      "scope": "one perceptual probe; not a broad quality benchmark"
+    }
+  },
+  "vram_validation": {
+    "tool": "tools/validate_h3_vram.py",
+    "modes": ["inspect", "make-pair", "run", "compare"],
+    "telemetry": [
+      "ComfyUI node and progress events",
+      "device VRAM baseline and peak",
+      "PyTorch active VRAM",
+      "DynamicVRAM startup evidence",
+      "execution error traceback"
+    ],
+    "scope": "diagnostic only; does not alter sampler math or model memory policy"
+  },
+  "reference_limits": {
+    "pictures": 9,
+    "videos": 3,
+    "standalone_audios": 3,
+    "reference_video_guidance_seconds": [2, 15]
+  }
+}

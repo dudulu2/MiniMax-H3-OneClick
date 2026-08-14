@@ -1,0 +1,70 @@
+name: Validate runtime selector
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+jobs:
+  validate-runtime-selector:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Parse runtime selector and launcher
+        shell: powershell
+        run: |
+          foreach ($path in @('step1-installer/Start-Installer.ps1', 'step1-installer/assets/runtime_channel_selector.ps1')) {
+            $tokens = $null
+            $errors = $null
+            [void][Management.Automation.Language.Parser]::ParseFile((Resolve-Path $path), [ref]$tokens, [ref]$errors)
+            if ($errors.Count -gt 0) {
+              $errors | Format-List | Out-String | Write-Error
+              exit 1
+            }
+          }
+
+      - name: Verify automatic and manual runtime selection
+        shell: powershell
+        run: |
+          function Test-IsBlackwellGpu {
+            param([string]$GpuName)
+            return [bool]($GpuName -match '(?i)RTX\s*50\d{2}|RTX\s+PRO.*Blackwell')
+          }
+          . ./step1-installer/assets/runtime_channel_selector.ps1
+
+          $script:SelectedRuntimeChannel = ''
+          foreach ($gpu in @(
+            'NVIDIA GeForce RTX 5090',
+            'NVIDIA GeForce RTX 5080',
+            'NVIDIA GeForce RTX 5070',
+            'NVIDIA GeForce RTX 4090',
+            'NVIDIA GeForce RTX 4060',
+            'NVIDIA GeForce RTX 3060'
+          )) {
+            if ((Get-RuntimeIdForGpu $gpu) -ne 'cuda130') { throw "$gpu must default to CUDA 13/cuda130." }
+          }
+
+          $script:SelectedRuntimeChannel = 'stable'
+          if ((Get-RuntimeIdForGpu 'NVIDIA GeForce RTX 5090') -ne 'cuda126') { throw 'Manual CUDA 12.6 compatibility selection was ignored.' }
+          if ((Get-RuntimeIdForGpu 'NVIDIA GeForce RTX 4090') -ne 'cuda126') { throw 'Manual CUDA 12.6 compatibility selection was ignored on RTX 4090.' }
+
+          $script:SelectedRuntimeChannel = 'new'
+          if ((Get-RuntimeIdForGpu 'NVIDIA GeForce RTX 4090') -ne 'cuda130') { throw 'Manual CUDA 13 selection was ignored.' }
+
+      - name: Verify launcher load order and labels
+        shell: powershell
+        run: |
+          $text = Get-Content step1-installer/Start-Installer.ps1 -Raw
+          $torch = $text.IndexOf('local_torch_wheels.ps1')
+          $selector = $text.IndexOf('runtime_channel_selector.ps1')
+          $workflow = $text.IndexOf('workflow_profile_fix.ps1')
+          if ($torch -lt 0 -or $selector -lt 0 -or $workflow -lt 0) { throw 'One or more installer extensions are missing.' }
+          if (-not ($torch -lt $selector -and $selector -lt $workflow)) { throw 'Runtime selector must load after Torch override and before workflow override.' }
+
+          $selectorText = Get-Content step1-installer/assets/runtime_channel_selector.ps1 -Raw
+          foreach ($needle in @('Compatibility - PyTorch 2.8 / CUDA 12.6', 'Default - PyTorch 2.12 / CUDA 13.0')) {
+            if (-not $selectorText.Contains($needle)) { throw "Missing runtime option label: $needle" }
+          }
+
+

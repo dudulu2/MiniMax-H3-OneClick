@@ -1,0 +1,11 @@
+MiniMax H3 音画智能缓存
+
+本项目根据 EasyCache 公开论文描述的运行时自适应缓存方法独立实现，
+并通过 ComfyUI 公开的模型包装接口接入 MiniMax H3。
+
+参考资料：
+- EasyCache 论文：https://arxiv.org/abs/2507.02860
+- EasyCache 官方仓库：https://github.com/H-EmbodVis/EasyCache
+- ComfyUI 官方仓库：https://github.com/Comfy-Org/ComfyUI
+
+发布包不包含第三方二进制扩展、模型、工作流或 ComfyUI 核心文件。
