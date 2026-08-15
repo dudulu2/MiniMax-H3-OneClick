@@ -55,8 +55,11 @@ jobs:
             '$requiredTriton = "3.7.1.post27"',
             '$requiredSage = "2.2.0+cu130torch2.10.0andhigher.post6"',
             'CUDA 12.6 / PyTorch 2.8 compatibility channel remains usable in step 1',
-            'Post-install Triton verification failed',
-            'Post-install SageAttention verification failed',
+            'Get-LatestPluginInstallLog',
+            'Restore-FailedPluginBackups',
+            'Failed to copy plugin ([^:]+):',
+            'Dependency installation failed for ',
+            'pip check failed after plugin installation',
             'import triton, sageattention'
           )) {
             if (-not $guard.Contains($needle)) { throw "Step 2 runtime guard is missing: $needle" }
@@ -89,10 +92,19 @@ jobs:
         shell: powershell
         run: |
           $bat = Get-Content 'step2-plugin-pack/Install-Plugins-Safe.bat' -Raw
-          foreach ($needle in @('Check-Step2-Runtime.ps1" -Phase Pre', 'Install-ComfyUI-Plugins-Safe.ps1" -AutoConfirm', 'Check-Step2-Runtime.ps1" -Phase Post')) {
+          foreach ($needle in @(
+            'Check-Step2-Runtime.ps1" -Phase Pre',
+            'Install-ComfyUI-Plugins-Safe.ps1" -AutoConfirm',
+            'set "installExit=%ERRORLEVEL%"',
+            'Check-Step2-Runtime.ps1" -Phase Post',
+            'set "postExit=%ERRORLEVEL%"'
+          )) {
             if (-not $bat.Contains($needle)) { throw "Batch entry point is missing: $needle" }
           }
           $pre = $bat.IndexOf('-Phase Pre')
           $install = $bat.IndexOf('Install-ComfyUI-Plugins-Safe.ps1')
           $post = $bat.IndexOf('-Phase Post')
-          if (-not ($pre -lt $install -and $install -lt $post)) { throw 'Step 2 runtime checks are not ordered pre -> install -> post.' }
+          $installFailureBranch = $bat.IndexOf('if not "%installExit%"=="0"')
+          if (-not ($pre -lt $install -and $install -lt $post -and $post -lt $installFailureBranch)) {
+            throw 'Step 2 must run postflight after the installer before branching on the installer exit code.'
+          }
