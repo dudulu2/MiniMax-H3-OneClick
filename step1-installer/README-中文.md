@@ -16,9 +16,11 @@
 
 | 配置 | 适用硬件 | 扩散模型 / 文本编码器 | 默认输出 | 最低可用空间 |
 |---|---|---|---|---:|
-| 兼容配置 | RTX 3060/4060 及其他 8–16 GB 显卡；16–32 GB 内存 | Pruned INT8 ConvRot / NVFP4 AWQ | 608×352、5 秒、24fps | 60 GiB |
-| 4090/5090 平衡配置 | RTX 4090 或 RTX 5090，至少 32 GB 内存 | Pruned FP8 Scaled / NVFP4 AWQ | 864×480、5 秒、24fps | 60 GiB |
+| 兼容配置 | RTX 3060/4060 及其他 8–16 GB 显卡；16–32 GB 内存 | Pruned INT8 ConvRot / INT8 ConvRot | 608×352、5 秒、24fps | 60 GiB |
+| 4090/5090 平衡配置 | RTX 4090 或 RTX 5090，至少 32 GB 内存 | Pruned FP8 Scaled / INT8 ConvRot | 864×480、5 秒、24fps | 60 GiB |
 | 64 GB 高质量配置 | 24 GB 以上显存、至少 64 GB 内存 | Pruned BF16 / INT8 ConvRot | 960×544、5 秒、24fps | 90 GiB |
+
+三个配置现在统一默认使用 `qwen3vl_32b_minimax_h3_int8_convrot.safetensors` 文本编码器。旧安装原来使用 NVFP4 时，重新运行安装器会在需要时下载并校验 INT8 文本模型、重新生成对应工作流，同时刷新浏览器自动加载标记，避免磁盘文件已更新但浏览器仍停留在旧 NVFP4 工作流。
 
 选择 `Auto` 时：
 
@@ -35,6 +37,12 @@
 
 开始下载 H3 模型前，安装器会验证精确版本、CUDA 是否可用、CUDA 运行时版本以及实际识别到的显卡。
 
+## 升级已有安装目录
+
+选择原来的安装目录并点击 **Install / Repair** 即可就地升级。安装器会保留模型、`user\` 工作流、日志、启动器、PyTorch wheel 缓存以及 `downloads\` 中的断点文件。若私有 Python 版本低于 3.13，会删除旧虚拟环境和旧私有 Python，再安装 Python 3.13.9 并重建 venv；若 PyTorch 版本与所选运行时不一致，则先卸载旧 Torch/Torchvision/TorchAudio，再安装目标版本，最后刷新 ComfyUI requirements、执行 `pip check` 和 CUDA 校验。
+
+ComfyUI 本体使用 `Expand-Archive -Force` 覆盖新版压缩包，因此属于“保留用户数据的修复/升级”，不是破坏性的目录镜像同步。也就是说，新版同名文件会更新，但上游已经删除、而旧目录仍残留的文件不会被自动清理。
+
 ## 安装内容
 
 - 固定版本 ComfyUI：`assets/ComfyUI-source.zip`（ComfyUI v0.32.0，SHA-256 校验）
@@ -42,7 +50,7 @@
 - 根据显卡自动选择的 PyTorch CUDA 运行环境
 - 随包 wheel 优先安装 Triton 3.7.1 与 SageAttention 2.2（离线可用）
 - 所选配置对应的一份 FL2VA 扩散模型
-- 所选配置对应的一份 Qwen3-VL 32B MiniMax H3 文本编码器
+- Qwen3-VL 32B MiniMax H3 INT8 ConvRot 文本编码器
 - MiniMax H3 视频 VAE 和音频 VAE
 - 自动生成与配置匹配的工作流，包括模型名和默认分辨率
 - `Start MiniMax H3.bat`、`Stop MiniMax H3.bat`、日志、安装清单和可选桌面快捷方式
@@ -66,4 +74,4 @@
 7. 运行 `Start MiniMax H3.bat` 或桌面快捷方式。
 8. 关机或移动安装目录前运行 `Stop MiniMax H3.bat`。
 
-目前代码和静态校验已经覆盖三种配置，但约 40–68 GiB 模型的完整下载和实际生成性能，仍需分别在 RTX 3060、RTX 4090 和 RTX 5090 代表机器上做端到端实测后，才能作为正式发布版本。
+目前代码和静态校验已经覆盖三种配置，但约 50–68 GiB 模型的完整下载和实际生成性能，仍需分别在 RTX 3060、RTX 4090 和 RTX 5090 代表机器上做端到端实测后，才能作为正式发布版本。
