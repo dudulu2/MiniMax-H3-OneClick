@@ -52,6 +52,31 @@ function Resolve-MiniMaxTargetRoot {
     return $valid[0]
 }
 
+function Invoke-LocalPythonProbe {
+    param(
+        [string]$Python,
+        [string[]]$Arguments
+    )
+
+    # Windows PowerShell 5.1 can surface native stderr as a terminating
+    # ErrorRecord when the script-level ErrorActionPreference is Stop. Python
+    # warnings (for example torch's pynvml FutureWarning) are not failures, so
+    # temporarily continue and judge the probe only by the native exit code.
+    $previousPreference = $ErrorActionPreference
+    try {
+        $ErrorActionPreference = "Continue"
+        $rawOutput = @(& $Python @Arguments 2>$null)
+        $exitCode = $LASTEXITCODE
+    } finally {
+        $ErrorActionPreference = $previousPreference
+    }
+
+    return [PSCustomObject]@{
+        ExitCode = [int]$exitCode
+        Output = @($rawOutput | ForEach-Object { [string]$_ })
+    }
+}
+
 function Invoke-LocalPip {
     param(
         [string]$Python,
@@ -132,7 +157,12 @@ $runtimeConstraints = Join-Path $root "runtime\constraints-selected.txt"
 $tempConstraints = Join-Path $env:TEMP ("minimax-step2-local-wheel-constraints-" + [Guid]::NewGuid().ToString("N") + ".txt")
 
 try {
-    $runtimeJson = (& $python -c "import json,torch,torchvision,torchaudio; print(json.dumps({'torch':torch.__version__,'torchvision':torchvision.__version__,'torchaudio':torchaudio.__version__}))" 2>$null | Select-Object -Last 1)
+    $runtimeProbe = Invoke-LocalPythonProbe -Python $python -Arguments @(
+        "-c",
+        "import json,torch,torchvision,torchaudio; print(json.dumps({'torch':torch.__version__,'torchvision':torchvision.__version__,'torchaudio':torchaudio.__version__}))"
+    )
+    if ($runtimeProbe.ExitCode -ne 0) { throw "Could not inspect the installed PyTorch runtime (Python exit $($runtimeProbe.ExitCode))." }
+    $runtimeJson = @($runtimeProbe.Output | Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_) } | Select-Object -Last 1)[0]
     if (-not $runtimeJson) { throw "Could not inspect the installed PyTorch runtime." }
     $runtime = $runtimeJson | ConvertFrom-Json
 
