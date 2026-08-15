@@ -14,16 +14,20 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Parse local wheel helper
+      - name: Parse local wheel helpers
         shell: powershell
         run: |
-          $path = 'step2-plugin-pack/Install-Step2-Dependencies-LocalFirst.ps1'
-          $tokens = $null
-          $errors = $null
-          [void][Management.Automation.Language.Parser]::ParseFile((Resolve-Path $path), [ref]$tokens, [ref]$errors)
-          if ($errors.Count -gt 0) {
-            $errors | Format-List | Out-String | Write-Error
-            exit 1
+          foreach ($path in @(
+            'step1-installer/assets/local_dependency_wheelhouse.ps1',
+            'step2-plugin-pack/Install-Step2-Dependencies-LocalFirst.ps1'
+          )) {
+            $tokens = $null
+            $errors = $null
+            [void][Management.Automation.Language.Parser]::ParseFile((Resolve-Path $path), [ref]$tokens, [ref]$errors)
+            if ($errors.Count -gt 0) {
+              $errors | Format-List | Out-String | Write-Error
+              exit 1
+            }
           }
 
       - name: Validate Step 1 local wheel order
@@ -37,7 +41,7 @@ jobs:
             'downloads\torch-wheels',
             'Invoke-ResumableTorchWheelDownload'
           )) {
-            if (-not $text.Contains($needle)) { throw "Step 1 local-wheel contract is missing: $needle" }
+            if (-not $text.Contains($needle)) { throw "Step 1 runtime local-wheel contract is missing: $needle" }
           }
 
           $start = $text.IndexOf('function Install-SelectedTorchRuntime')
@@ -46,7 +50,26 @@ jobs:
           $local = $body.IndexOf('$wheel = Find-LocalPythonWheel')
           $download = $body.IndexOf('$wheel = Invoke-ResumableTorchWheelDownload')
           if ($local -lt 0 -or $download -lt 0 -or $local -ge $download) {
-            throw 'Step 1 must check bundled local wheels before downloading PyTorch wheels.'
+            throw 'Step 1 must check bundled local runtime wheels before downloading PyTorch wheels.'
+          }
+
+          $dependencyHelper = Get-Content 'step1-installer/assets/local_dependency_wheelhouse.ps1' -Raw
+          foreach ($needle in @(
+            'wheels\dependencies',
+            '--no-index --find-links',
+            'InvokePipWithFallbackBeforeLocalWheelhouse',
+            'InvokeBasePyPiWithFallbackBeforeLocalWheelhouse',
+            'continuing with configured package sources'
+          )) {
+            if (-not $dependencyHelper.Contains($needle)) { throw "Step 1 dependency local-wheel contract is missing: $needle" }
+          }
+
+          $loader = Get-Content 'step1-installer/Start-Installer.ps1' -Raw
+          $torchLoad = $loader.IndexOf('local_torch_wheels.ps1')
+          $dependencyLoad = $loader.IndexOf('local_dependency_wheelhouse.ps1')
+          $upgradeLoad = $loader.IndexOf('upgrade_repair.ps1')
+          if (-not ($torchLoad -ge 0 -and $torchLoad -lt $dependencyLoad -and $dependencyLoad -lt $upgradeLoad)) {
+            throw 'Step 1 must load local_torch_wheels -> local_dependency_wheelhouse -> upgrade_repair.'
           }
 
           $upgrade = Get-Content 'step1-installer/assets/upgrade_repair.ps1' -Raw
@@ -65,12 +88,17 @@ jobs:
           foreach ($needle in @(
             'wheels\dependencies',
             'step2-wheel-sha256.txt',
+            'step2-wheel-lock.txt',
             '"--no-index"',
             '"--find-links", $wheelhouse',
             'Network fallback will finish the installation',
             'Local dependency wheelhouse satisfied all Step 2 plugin requirements'
           )) {
             if (-not $helper.Contains($needle)) { throw "Step 2 local-wheel contract is missing: $needle" }
+          }
+
+          if (-not (Test-Path 'step2-plugin-pack/step2-wheel-lock.txt')) {
+            throw 'Step 2 validated dependency lock is missing.'
           }
 
           $bat = Get-Content 'step2-plugin-pack/Install-Plugins-Safe.bat' -Raw
@@ -92,7 +120,7 @@ jobs:
             throw 'Step 2 order must be preflight -> local wheelhouse -> plugin installer -> postflight.'
           }
 
-      - name: Exercise empty wheelhouse network fallback
+      - name: Exercise empty Step 2 wheelhouse network fallback
         shell: powershell
         run: |
           & powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File 'step2-plugin-pack/Install-Step2-Dependencies-LocalFirst.ps1'
