@@ -1,0 +1,110 @@
+name: Validate one-click installer
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  validate-one-click-installer:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Parse one-click PowerShell entry points
+        shell: powershell
+        run: |
+          foreach ($path in @(
+            'OneClick-Install.ps1',
+            'step1-installer/Start-Installer.ps1'
+          )) {
+            $tokens = $null
+            $errors = $null
+            [void][Management.Automation.Language.Parser]::ParseFile((Resolve-Path $path), [ref]$tokens, [ref]$errors)
+            if ($errors.Count -gt 0) {
+              $errors | Format-List | Out-String | Write-Error
+              exit 1
+            }
+          }
+
+      - name: Validate root orchestration contract
+        shell: powershell
+        run: |
+          # Avoid a non-ASCII filename literal in the PowerShell 5.1 runner
+          # script. Identify the root launcher by the helper it invokes instead.
+          $rootBat = Get-ChildItem -LiteralPath . -Filter '*.bat' -File |
+            Where-Object { (Get-Content -LiteralPath $_.FullName -Raw).Contains('OneClick-Install.ps1') } |
+            Select-Object -First 1
+          if (-not $rootBat) {
+            throw 'Root one-click BAT entry point is missing.'
+          }
+
+          $bat = Get-Content -LiteralPath $rootBat.FullName -Raw
+          if (-not $bat.Contains('OneClick-Install.ps1')) {
+            throw 'Root BAT must launch OneClick-Install.ps1.'
+          }
+
+          $root = Get-Content -LiteralPath 'OneClick-Install.ps1' -Raw
+          foreach ($needle in @(
+            'step1-installer\Start-Installer.ps1',
+            '-AutoInstall -InstallRoot $installRoot',
+            'step2-plugin-pack',
+            'Install-Plugins-Safe.bat --no-pause',
+            '$env:MINIMAX_H3_ROOT = $installRoot',
+            'Get-LatestStep2Log',
+            '[Windows.Forms.MessageBox]::Show'
+          )) {
+            if (-not $root.Contains($needle)) { throw "One-click orchestration contract is missing: $needle" }
+          }
+
+          $step1 = $root.IndexOf('-AutoInstall -InstallRoot $installRoot')
+          $step2 = $root.IndexOf('Install-Plugins-Safe.bat --no-pause')
+          $success = $root.IndexOf('$successTitle =')
+          if ($step1 -lt 0 -or $step2 -lt 0 -or $success -lt 0 -or -not ($step1 -lt $step2 -and $step2 -lt $success)) {
+            throw 'One-click order must be Step 1 -> Step 2 -> final success prompt.'
+          }
+
+          $step2Bat = Get-Content -LiteralPath 'step2-plugin-pack/Install-Plugins-Safe.bat' -Raw
+          foreach ($needle in @(
+            'if /I "%~1"=="--no-pause" set "NO_PAUSE=1"',
+            'if "%NO_PAUSE%"=="0" pause'
+          )) {
+            if (-not $step2Bat.Contains($needle)) { throw "Step 2 unattended contract is missing: $needle" }
+          }
+
+      - name: Validate Step 1 unattended patch contract
+        shell: powershell
+        run: |
+          $step1 = Get-Content -LiteralPath 'step1-installer/Start-Installer.ps1' -Raw
+          foreach ($needle in @(
+            '[switch]$AutoInstall',
+            '$script:OneClickAutoInstall',
+            '$script:OneClickInstallRoot',
+            '$script:OneClickExitCode = 20',
+            '$script:OneClickExitCode = 21',
+            '$script:OneClickExitCode = 1',
+            '$script:ProfileConfirmed = $true',
+            '$form.Add_Shown({',
+            'Invoke-Install',
+            '$form.Close()',
+            'step1-oneclick-latest.log',
+            'if ($script:OneClickAutoInstall) { exit [int]$script:OneClickExitCode }'
+          )) {
+            if (-not $step1.Contains($needle)) { throw "Step 1 unattended contract is missing: $needle" }
+          }
+
+          $source = Get-Content -LiteralPath 'step1-installer/Install-MiniMaxH3.ps1' -Raw
+          foreach ($needle in @(
+            'param([switch]$SelfTest)',
+            '$txtPath.Text = $defaultDrive',
+            'Resolve the failed checks before installing.',
+            'The selected folder is not empty and is not marked as a MiniMax H3 installation.',
+            'Installation completed successfully.',
+            'Installation stopped:',
+            '[void]$form.ShowDialog()'
+          )) {
+            if (-not $source.Contains($needle)) { throw "Step 1 source patch point is missing: $needle" }
+          }

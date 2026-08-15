@@ -1,0 +1,150 @@
+name: Validate upgrade postchecks
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  validate-upgrade-postcheck:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Parse postcheck override
+        shell: powershell
+        run: |
+          foreach ($path in @(
+            'step1-installer/Start-Installer.ps1',
+            'step1-installer/assets/upgrade_postcheck.ps1'
+          )) {
+            $tokens = $null
+            $errors = $null
+            [void][Management.Automation.Language.Parser]::ParseFile((Resolve-Path $path), [ref]$tokens, [ref]$errors)
+            if ($errors.Count -gt 0) {
+              $errors | Format-List | Out-String | Write-Error
+              exit 1
+            }
+          }
+
+      - name: Validate load order and postcheck contract
+        shell: powershell
+        run: |
+          $start = Get-Content 'step1-installer/Start-Installer.ps1' -Raw
+          $repair = $start.IndexOf('upgrade_repair.ps1')
+          $post = $start.IndexOf('upgrade_postcheck.ps1')
+          $cancel = $start.IndexOf('install_cancellation.ps1')
+          if ($repair -lt 0 -or $post -lt 0 -or $cancel -lt 0) { throw 'Upgrade postcheck load order is incomplete.' }
+          if (-not ($repair -lt $post -and $post -lt $cancel)) { throw 'upgrade_postcheck.ps1 must load after upgrade_repair.ps1 and before cancellation/UI overrides.' }
+
+          $text = Get-Content 'step1-installer/assets/upgrade_postcheck.ps1' -Raw
+          foreach ($needle in @(
+            'Ignoring stale ComfyUI PID file entry',
+            'Protected directories were left untouched',
+            'Resolve-ComfyEnvironmentResult -Output $output',
+            'Final acceleration runtime check',
+            'Install-SageAttentionRuntime -Python $environment.Python',
+            'Final Python dependency consistency check',
+            '-m pip check'
+          )) {
+            if (-not $text.Contains($needle)) { throw "Upgrade postcheck contract is missing: $needle" }
+          }
+          if ($text.Contains('New-Object System.Collections.Generic.List[object]')) {
+            throw 'The process guard must not use Generic.List[object]; Windows PowerShell 5.1 can fail while converting it to an object array.'
+          }
+
+      - name: Exercise PowerShell 5.1 process-array guard
+        shell: powershell
+        run: |
+          function Install-ComfyEnvironment { param([string]$InstallRoot, [string]$BasePython, $Runtime); return [PSCustomObject]@{ ComfyRoot='C:\fake\ComfyUI'; Python='C:\fake\python.exe' } }
+          function Add-Log { param([string]$Message, [string]$Level = 'INFO') }
+          function Set-Stage { param([string]$Text, [int]$Percent = -1) }
+          function Resolve-ComfyEnvironmentResult { param([object[]]$Output); return $Output[0] }
+          function Install-SageAttentionRuntime { param([string]$Python, [string]$InstallRoot) }
+          function Invoke-ProcessChecked { param([string]$FilePath, [string]$Arguments, [string]$WorkingDirectory, [switch]$AllowFailure); return $null }
+
+          . ./step1-installer/assets/upgrade_postcheck.ps1
+
+          $fakeRoot = Join-Path $env:RUNNER_TEMP 'minimax-process-array-test'
+          $runtime = Join-Path $fakeRoot 'runtime'
+          New-Item -ItemType Directory -Force -Path $runtime | Out-Null
+          # Point the fake PID file at this PowerShell process. Its executable is
+          # outside $fakeRoot, so the guard must safely treat it as stale and
+          # return an empty native PowerShell array without a binder exception.
+          $PID | Set-Content -LiteralPath (Join-Path $runtime 'comfyui.pid') -Encoding ASCII
+          $result = @(Get-MiniMaxRunningProcessesForUpgrade -InstallRoot $fakeRoot)
+          if ($result.Count -ne 0) { throw "Expected stale PID to be ignored; got $($result.Count) process(es)." }
+          Write-Host "PowerShell $($PSVersionTable.PSVersion): process-array guard passed."
+
+      - name: Exercise protected-directory clean core refresh
+        shell: powershell
+        run: |
+          function Install-ComfyEnvironment { param([string]$InstallRoot, [string]$BasePython, $Runtime); return [PSCustomObject]@{ ComfyRoot='C:\fake\ComfyUI'; Python='C:\fake\python.exe' } }
+          function Add-Log { param([string]$Message, [string]$Level = 'INFO') }
+          function Set-Stage { param([string]$Text, [int]$Percent = -1) }
+          function Resolve-ComfyEnvironmentResult { param([object[]]$Output); return $Output[0] }
+          function Install-SageAttentionRuntime { param([string]$Python, [string]$InstallRoot) }
+          function Invoke-ProcessChecked { param([string]$FilePath, [string]$Arguments, [string]$WorkingDirectory, [switch]$AllowFailure); return $null }
+
+          . ./step1-installer/assets/upgrade_postcheck.ps1
+
+          $work = Join-Path $env:RUNNER_TEMP 'minimax-protected-refresh-test'
+          Remove-Item -LiteralPath $work -Recurse -Force -ErrorAction SilentlyContinue
+          $install = Join-Path $work 'install'
+          $comfy = Join-Path $install 'ComfyUI'
+          foreach ($dir in @('models','user','custom_nodes','input','output','temp')) {
+            New-Item -ItemType Directory -Force -Path (Join-Path $comfy $dir) | Out-Null
+            ('user-' + $dir) | Set-Content -LiteralPath (Join-Path $comfy ($dir + '\keep.txt')) -Encoding ASCII
+          }
+          'old-main' | Set-Content -LiteralPath (Join-Path $comfy 'main.py') -Encoding ASCII
+          'stale' | Set-Content -LiteralPath (Join-Path $comfy 'old_core.py') -Encoding ASCII
+          'custom-config' | Set-Content -LiteralPath (Join-Path $comfy 'extra_model_paths.yaml') -Encoding ASCII
+
+          $sourceRoot = Join-Path $work 'source'
+          $sourceComfy = Join-Path $sourceRoot 'ComfyUI'
+          foreach ($dir in @('models','user','custom_nodes','input','output','temp')) {
+            New-Item -ItemType Directory -Force -Path (Join-Path $sourceComfy $dir) | Out-Null
+            ('source-' + $dir) | Set-Content -LiteralPath (Join-Path $sourceComfy ($dir + '\keep.txt')) -Encoding ASCII
+            'should-not-be-added' | Set-Content -LiteralPath (Join-Path $sourceComfy ($dir + '\source-only.txt')) -Encoding ASCII
+          }
+          'new-main' | Set-Content -LiteralPath (Join-Path $sourceComfy 'main.py') -Encoding ASCII
+          'new-core' | Set-Content -LiteralPath (Join-Path $sourceComfy 'new_core.py') -Encoding ASCII
+          'source-config' | Set-Content -LiteralPath (Join-Path $sourceComfy 'extra_model_paths.yaml') -Encoding ASCII
+          $zip = Join-Path $work 'ComfyUI-source.zip'
+          Compress-Archive -Path $sourceComfy -DestinationPath $zip -Force
+
+          Sync-ComfyUISource -SourceZip $zip -InstallRoot $install | Out-Null
+          if (Test-Path -LiteralPath (Join-Path $comfy 'old_core.py')) { throw 'Stale core file survived.' }
+          if (-not (Test-Path -LiteralPath (Join-Path $comfy 'new_core.py'))) { throw 'New core file was not deployed.' }
+          foreach ($dir in @('models','user','custom_nodes','input','output','temp')) {
+            $kept = (Get-Content -LiteralPath (Join-Path $comfy ($dir + '\keep.txt')) -Raw).Trim()
+            if ($kept -ne ('user-' + $dir)) { throw "Protected directory $dir was overwritten." }
+            if (Test-Path -LiteralPath (Join-Path $comfy ($dir + '\source-only.txt'))) { throw "Protected directory $dir received staged source content." }
+          }
+          if ((Get-Content -LiteralPath (Join-Path $comfy 'extra_model_paths.yaml') -Raw).Trim() -ne 'custom-config') { throw 'extra_model_paths.yaml was overwritten.' }
+
+      - name: Exercise single environment return and final acceleration call
+        shell: powershell
+        run: |
+          function Install-ComfyEnvironment {
+            param([string]$InstallRoot, [string]$BasePython, $Runtime)
+            return [PSCustomObject]@{ ComfyRoot='C:\fake\ComfyUI'; Python='C:\fake\python.exe' }
+          }
+          function Resolve-ComfyEnvironmentResult {
+            param([object[]]$Output)
+            $matches = @($Output | Where-Object { $_ -and $_.PSObject.Properties['ComfyRoot'] -and $_.PSObject.Properties['Python'] })
+            if ($matches.Count -ne 1) { throw "Expected one environment object, found $($matches.Count)." }
+            return $matches[0]
+          }
+          $script:SagePostCheckCalls = 0
+          function Install-SageAttentionRuntime { param([string]$Python, [string]$InstallRoot); $script:SagePostCheckCalls++ }
+          function Set-Stage { param([string]$Text, [int]$Percent = -1) }
+          function Invoke-ProcessChecked { param([string]$FilePath, [string]$Arguments, [string]$WorkingDirectory, [switch]$AllowFailure); return $null }
+
+          . ./step1-installer/assets/upgrade_postcheck.ps1
+          $result = @(Install-ComfyEnvironment -InstallRoot 'C:\fake' -BasePython 'base' -Runtime ([PSCustomObject]@{}))
+          if ($result.Count -ne 1) { throw "Postcheck wrapper emitted $($result.Count) values instead of one environment object." }
+          if ($script:SagePostCheckCalls -ne 1) { throw "Expected exactly one final acceleration check, observed $script:SagePostCheckCalls." }

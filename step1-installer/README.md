@@ -18,9 +18,11 @@ The installer chooses the highest-VRAM NVIDIA GPU when more than one GPU is pres
 
 | Profile | Intended hardware | Diffusion / text encoder | Default output | Minimum free disk |
 |---|---|---|---|---:|
-| Compatibility | RTX 3060/4060 and other 8–16 GB cards; 16–32 GB RAM | Pruned INT8 ConvRot / NVFP4 AWQ | 608x352, 5 seconds, 24 fps | 60 GiB |
-| Balanced 4090/5090 | RTX 4090 or RTX 5090 with at least 32 GB RAM | Pruned FP8 Scaled / NVFP4 AWQ | 864x480, 5 seconds, 24 fps | 60 GiB |
+| Compatibility | RTX 3060/4060 and other 8–16 GB cards; 16–32 GB RAM | Pruned INT8 ConvRot / INT8 ConvRot | 608x352, 5 seconds, 24 fps | 60 GiB |
+| Balanced 4090/5090 | RTX 4090 or RTX 5090 with at least 32 GB RAM | Pruned FP8 Scaled / INT8 ConvRot | 864x480, 5 seconds, 24 fps | 60 GiB |
 | Quality 64 GB | 24 GB+ VRAM and at least 64 GB RAM | Pruned BF16 / INT8 ConvRot | 960x544, 5 seconds, 24 fps | 90 GiB |
+
+All profiles now use `qwen3vl_32b_minimax_h3_int8_convrot.safetensors` as the default text encoder. Re-running the installer on an older installation downloads and verifies the INT8 encoder when needed, regenerates the profile workflow, and refreshes the browser autoload key so an older NVFP4-based canvas is not silently reused.
 
 `Auto` recommends Compatibility for normal 8–16 GB cards and for RTX 30-series cards with 32 GB RAM. It recommends Balanced for FP8-capable RTX 40/50-series cards with 24 GB+ VRAM and 32–63 GB RAM, and Quality for any supported 24 GB+ card with at least 64 GB RAM. A manually selected profile is checked against its own VRAM, RAM, and disk requirements before installation can start.
 
@@ -32,16 +34,24 @@ The default runtime for RTX 30, RTX 40, and RTX 50 series is:
 - Torchvision `0.27.0+cu130`
 - TorchAudio `2.11.0+cu130`
 - CUDA runtime `13.0`
+- Triton `3.7.1.post27`
+- SageAttention `2.2.0+cu130torch2.10.0andhigher.post6`
 
-PyTorch `2.8.0+cu126` / CUDA `12.6` remains selectable from **Change configuration** as a compatibility fallback.
+PyTorch `2.8.0+cu126` / CUDA `12.6` remains selectable from **Change configuration** as a compatibility fallback. The bundled SageAttention wheel is explicitly a CUDA 13 / Torch 2.10+ build, so the installer does **not** install that Sage/Triton acceleration pair on the CUDA 12.6 / PyTorch 2.8 fallback. Standard PyTorch attention remains available on that runtime.
 
 The installer verifies the exact package versions, CUDA availability, CUDA runtime version, and detected GPU before downloading the H3 models.
 
 ## Upgrade an existing installation
 
-Select the same installation directory and click **Install / Repair**. The installer preserves models, user workflows, logs, launchers, PyTorch wheel cache, and partial model downloads. If the installed PyTorch runtime does not match the selected runtime, the old Torch/Torchvision/TorchAudio packages are removed and the matching set is installed. ComfyUI requirements are then refreshed with `--upgrade --upgrade-strategy only-if-needed`, followed by `pip check` and a CUDA verification run.
+Select the same installation directory and click **Install / Repair**. Stop MiniMax H3 first: the repair path checks the installation PID file and Python processes under the selected root and refuses to replace ComfyUI/Python files while they are still in use. A stale PID file that points to a process outside the selected installation is ignored rather than blocking repair.
+
+The installer preserves models, user workflows, logs, launchers, PyTorch wheel cache, and partial model downloads. The private Python runtime is repaired to the exact `3.13.9` patch level; any other private Python patch/minor version causes the old virtual environment and private runtime to be rebuilt. If the installed PyTorch runtime does not match the selected runtime, the old Torch/Torchvision/TorchAudio packages are removed and the matching set is installed. ComfyUI requirements are then refreshed with `--upgrade --upgrade-strategy only-if-needed`, followed by `pip check`, a final SageAttention/Triton repair/verification pass, another dependency-consistency check, and CUDA verification.
 
 Existing RTX 30/40/50-series installations that are still on the older runtime are upgraded to PyTorch 2.12 CUDA 13.0 by default unless the CUDA 12.6 compatibility runtime is selected manually.
+
+For an existing ComfyUI tree, the verified `ComfyUI-source.zip` is first extracted into a staging directory. The active non-user ComfyUI application files are copied into `comfyui-backups/<timestamp>/`, stale core files are removed, and the staged source is deployed cleanly. The following user-owned locations are preserved **without merging or overwriting staged source content into them**: `models/`, `user/`, `custom_nodes/`, `input/`, `output/`, `temp/`, plus an existing root `extra_model_paths.yaml`. If the core refresh fails, the installer attempts to restore the previous application files from the backup.
+
+Old, no-longer-selected model weights are intentionally not deleted. For example, after upgrading from the previous NVFP4 text encoder default, the old NVFP4 file may remain beside the new INT8 model until the user removes it manually.
 
 ## Local and cached PyTorch wheels
 
@@ -58,18 +68,18 @@ The smaller PyTorch Python dependencies such as NumPy, Pillow, NetworkX, Jinja2,
 ## Installed stack
 
 - Fixed ComfyUI source `v0.32.0` bundled as `assets/ComfyUI-source.zip`
-- Private Python 3.13 runtime and virtual environment
+- Private Python 3.13.9 runtime and virtual environment
 - Selected PyTorch CUDA runtime
-- Triton 3.7.1 and SageAttention 2.2 installed from bundled wheels when present
+- Triton 3.7.1 and SageAttention 2.2 on the default CUDA 13 runtime
 - One selected FL2VA diffusion model
-- One selected Qwen3-VL 32B MiniMax H3 text encoder
+- Qwen3-VL 32B MiniMax H3 INT8 ConvRot text encoder
 - MiniMax H3 video and audio VAEs
 - A generated workflow whose model names and resolution match the selected profile
 - `Start MiniMax H3.bat`, `Stop MiniMax H3.bat`, logs, manifest, and optional desktop shortcut
 
 The current installer deploys the standard FL2VA workflow for text generation and optional first/last frame conditioning. Ref2VA reference-image/video/audio weights are not installed by this version.
 
-The launcher does not use `--lowvram`; ComfyUI uses DynamicVRAM. The SageAttention 2.2 acceleration node is bundled and activated by the second installation step.
+The launcher does not use `--lowvram`; ComfyUI uses DynamicVRAM. The SageAttention 2.2 acceleration node is bundled by the second installation step for the default CUDA 13 runtime.
 
 ## Download routes and safety
 
@@ -90,9 +100,10 @@ PyTorch wheel downloads are stored in the installation's `downloads/torch-wheels
 2. Review the detected GPU/RAM and accept `Auto`, or choose one of the three profiles.
 3. Leave the default CUDA 13.0 runtime selected unless a compatibility fallback is needed.
 4. Select an installation folder and run **Check computer**.
-5. Click **Install / Repair**.
-6. After completion, run the second step (plugin pack) to add the workflows, plugins, and the SageAttention node.
-7. Use `Start MiniMax H3.bat` or the desktop shortcut.
-8. Use `Stop MiniMax H3.bat` before shutting down or moving the installation.
+5. If repairing an existing install, run `Stop MiniMax H3.bat` first.
+6. Click **Install / Repair**.
+7. On the default CUDA 13 runtime, run the second step (plugin pack) to add/update the 12 plugins and verify the SageAttention/Triton acceleration stack.
+8. Use `Start MiniMax H3.bat` or the desktop shortcut.
+9. Use `Stop MiniMax H3.bat` before shutting down or moving the installation.
 
-The full 40–68 GiB model downloads and generation performance still require end-to-end validation on representative RTX 3060, RTX 4090, and RTX 5090 systems before this branch is treated as a final release.
+The full 50–68 GiB model downloads and generation performance still require end-to-end validation on representative RTX 3060, RTX 4090, and RTX 5090 systems before this branch is treated as a final release.

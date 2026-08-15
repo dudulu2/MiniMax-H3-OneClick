@@ -19,6 +19,14 @@ if ([string]::IsNullOrWhiteSpace($env:PIP_DISABLE_PIP_VERSION_CHECK)) { $env:PIP
 $pluginIndexUrl = $env:PIP_INDEX_URL
 $pluginTimeout = if ($env:PIP_DEFAULT_TIMEOUT -match '^\d+$') { $env:PIP_DEFAULT_TIMEOUT } else { "120" }
 $pluginRetries = if ($env:PIP_RETRIES -match '^\d+$') { $env:PIP_RETRIES } else { "3" }
+$targetPythonVersion = "3.13.9"
+$targetPythonTag = "cp313"
+$targetTorchVersion = "2.12.0+cu130"
+$targetTorchvisionVersion = "0.27.0+cu130"
+$targetTorchaudioVersion = "2.11.0+cu130"
+$targetCudaPrefix = "13.0"
+$targetTritonVersion = "3.7.1.post27"
+$targetSageVersion = "2.2.0+cu130torch2.10.0andhigher.post6"
 
 function Test-MiniMaxTargetRoot {
     param([string]$Path)
@@ -82,6 +90,7 @@ function Stop-WithMessage {
     Write-Log $Message "ERROR"
     Write-Host ""
     Write-Host "Installation stopped. Review the log above before retrying."
+    Remove-Item -LiteralPath $tempConstraints -Force -ErrorAction SilentlyContinue
     exit 1
 }
 
@@ -167,6 +176,15 @@ if (-not (Test-Path -LiteralPath $venvPython)) {
     Stop-WithMessage "MiniMax H3 Python environment was not found: $venvPython"
 }
 
+$venvVersion = (& $venvPython -c "import platform; print(platform.python_version())" 2>$null | Select-Object -Last 1)
+if ([string]::IsNullOrWhiteSpace($venvVersion)) {
+    Stop-WithMessage "Could not detect the Python version of the MiniMax H3 environment."
+}
+if ([string]$venvVersion -ne $targetPythonVersion) {
+    Stop-WithMessage "Step 2 requires Python $targetPythonVersion, but this installation uses Python $venvVersion. Re-run step1-installer\Start-Installer.bat with Install / Repair first, then run the plugin installer again."
+}
+Write-Log "Python runtime verified: $venvVersion ($targetPythonTag)."
+
 $runningComfyUI = Get-RunningComfyUIProcess
 if ($runningComfyUI) {
     Stop-WithMessage "ComfyUI is still running (PID $($runningComfyUI.Id)). Double-click '$TargetRoot\Stop MiniMax H3.bat' and then run Install-Plugins-Safe.bat again."
@@ -179,6 +197,15 @@ if ($LASTEXITCODE -ne 0 -or -not $versionsJson) {
 }
 
 $versions = $versionsJson | ConvertFrom-Json
+if (
+    [string]$versions.torch -ne $targetTorchVersion -or
+    [string]$versions.torchvision -ne $targetTorchvisionVersion -or
+    [string]$versions.torchaudio -ne $targetTorchaudioVersion -or
+    [string]$versions.cuda -notlike "$targetCudaPrefix*"
+) {
+    Stop-WithMessage "Step 2 requires the default PyTorch 2.12 / CUDA 13.0 runtime. Current runtime: torch=$($versions.torch), torchvision=$($versions.torchvision), torchaudio=$($versions.torchaudio), CUDA=$($versions.cuda). Run step 1 Install / Repair and select the default CUDA 13.0 runtime first."
+}
+
 @"
 torch==$($versions.torch)
 torchvision==$($versions.torchvision)
@@ -198,71 +225,132 @@ function Get-VenvPythonTag {
     $code = "import sys; print('cp%d%d' % sys.version_info[:2])"
     $tag = (& $venvPython -c $code 2>$null | Select-Object -Last 1)
     if (-not $tag -or $tag -notmatch '^cp\d+$') {
-        Stop-WithMessage "Could not detect the Python version of the MiniMax H3 environment."
+        Stop-WithMessage "Could not detect the Python tag of the MiniMax H3 environment."
+    }
+    if ([string]$tag -ne $targetPythonTag) {
+        Stop-WithMessage "Step 2 requires the $targetPythonTag wheel ABI, but the current environment reports $tag. Re-run step 1 first."
     }
     return $tag
 }
 
+function Get-PackageVersion {
+    param([string]$PackageName)
+    $code = "import importlib.metadata as m,sys`ntry:`n print(m.version(sys.argv[1]))`nexcept Exception:`n print('')"
+    $version = (& $venvPython -c $code $PackageName 2>$null | Select-Object -Last 1)
+    if ($null -eq $version) { return "" }
+    return [string]$version
+}
+
+function Install-PackageFromIndexes {
+    param([string]$PackageSpec, [string]$Label)
+
+    $args = @(
+        "-m", "pip", "install", $PackageSpec,
+        "--upgrade", "--force-reinstall", "--no-deps",
+        "--index-url", $pluginIndexUrl,
+        "--timeout", $pluginTimeout,
+        "--retries", $pluginRetries,
+        "--disable-pip-version-check"
+    )
+    $exitCode = Invoke-NativeLogged -FilePath $venvPython -Arguments $args -WorkingDirectory $TargetRoot
+    if ($exitCode -eq 0) { return 0 }
+
+    Write-Log "$Label installation from the configured mirror failed; retrying with official PyPI." "WARN"
+    $fallbackArgs = @(
+        "-m", "pip", "install", $PackageSpec,
+        "--upgrade", "--force-reinstall", "--no-deps",
+        "--index-url", "https://pypi.org/simple",
+        "--timeout", $pluginTimeout,
+        "--retries", $pluginRetries,
+        "--disable-pip-version-check"
+    )
+    return (Invoke-NativeLogged -FilePath $venvPython -Arguments $fallbackArgs -WorkingDirectory $TargetRoot)
+}
+
 function Install-OfflineAccelerationWheels {
     $wheelsDir = Join-Path $sourceRoot "wheels"
-    if (-not (Test-Path -LiteralPath $wheelsDir)) {
-        Write-Log "No bundled wheels folder next to this script; acceleration wheels will be installed from Python package sources when needed."
-        return
-    }
-
     $pyTag = Get-VenvPythonTag
     Write-Log "Python tag: $pyTag"
 
-    $tritonState = (& $venvPython -c "import importlib.metadata as m`ntry:`n print(m.version('triton_windows'))`nexcept Exception:`n print('')" 2>$null | Select-Object -Last 1)
-    if ($tritonState) {
-        Write-Log "Triton already installed: $tritonState"
+    $tritonState = Get-PackageVersion -PackageName "triton_windows"
+    if ($tritonState -eq $targetTritonVersion) {
+        Write-Log "Triton is already at the required version: $tritonState"
     } else {
-        $localTriton = Get-ChildItem -LiteralPath $wheelsDir -Filter "triton_windows-*.whl" -File |
-            Where-Object { $_.Name -match ('-' + [regex]::Escape($pyTag) + '-') } |
-            Select-Object -First 1
-        if ($localTriton) {
-            Write-Log "Installing Triton from bundled wheel: $($localTriton.Name)"
-            $args = @("-m", "pip", "install", $localTriton.FullName, "--no-deps", "--disable-pip-version-check")
-            $exitCode = Invoke-NativeLogged -FilePath $venvPython -Arguments $args -WorkingDirectory $TargetRoot
-            if ($exitCode -ne 0) { Stop-WithMessage "Bundled Triton wheel installation failed with exit code $exitCode." }
+        if ($tritonState) {
+            Write-Log "Triton version mismatch: installed $tritonState, required $targetTritonVersion. Upgrading." "WARN"
         } else {
-            Write-Log "No bundled Triton wheel matches $pyTag; installing triton_windows==3.7.1.post27 from package sources."
-            $args = @(
-                "-m", "pip", "install", "triton_windows==3.7.1.post27",
-                "--index-url", $pluginIndexUrl,
-                "--timeout", $pluginTimeout,
-                "--retries", $pluginRetries,
-                "--disable-pip-version-check"
-            )
-            $exitCode = Invoke-NativeLogged -FilePath $venvPython -Arguments $args -WorkingDirectory $TargetRoot
-            if ($exitCode -ne 0) {
-                Write-Log "Mirror Triton installation failed; retrying with official PyPI." "WARN"
-                $fallbackArgs = @(
-                    "-m", "pip", "install", "triton_windows==3.7.1.post27",
-                    "--index-url", "https://pypi.org/simple",
-                    "--timeout", $pluginTimeout,
-                    "--retries", $pluginRetries,
-                    "--disable-pip-version-check"
-                )
-                $exitCode = Invoke-NativeLogged -FilePath $venvPython -Arguments $fallbackArgs -WorkingDirectory $TargetRoot
-            }
-            if ($exitCode -ne 0) { Stop-WithMessage "Triton installation failed with exit code $exitCode." }
+            Write-Log "Triton is not installed. Installing $targetTritonVersion."
         }
+
+        $localTriton = $null
+        if (Test-Path -LiteralPath $wheelsDir) {
+            $expectedTritonWheel = "triton_windows-$targetTritonVersion-$pyTag-$pyTag-win_amd64.whl"
+            $candidate = Join-Path $wheelsDir $expectedTritonWheel
+            if (Test-Path -LiteralPath $candidate -PathType Leaf) { $localTriton = Get-Item -LiteralPath $candidate }
+        }
+
+        $tritonExit = 1
+        if ($localTriton) {
+            Write-Log "Installing required Triton from bundled wheel: $($localTriton.Name)"
+            $tritonArgs = @("-m", "pip", "install", $localTriton.FullName, "--upgrade", "--force-reinstall", "--no-deps", "--disable-pip-version-check")
+            $tritonExit = Invoke-NativeLogged -FilePath $venvPython -Arguments $tritonArgs -WorkingDirectory $TargetRoot
+            if ($tritonExit -ne 0) {
+                Write-Log "Bundled Triton wheel installation failed; trying package indexes." "WARN"
+            }
+        } else {
+            Write-Log "Bundled Triton $targetTritonVersion wheel was not found; trying package indexes." "WARN"
+        }
+        if ($tritonExit -ne 0) {
+            $tritonExit = Install-PackageFromIndexes -PackageSpec "triton_windows==$targetTritonVersion" -Label "Triton"
+        }
+        if ($tritonExit -ne 0) { Stop-WithMessage "Triton $targetTritonVersion installation failed with exit code $tritonExit." }
     }
 
-    $sageState = (& $venvPython -c "import importlib.metadata as m`ntry:`n print(m.version('sageattention'))`nexcept Exception:`n print('')" 2>$null | Select-Object -Last 1)
-    if ($sageState) {
-        Write-Log "SageAttention already installed: $sageState"
+    $sageState = Get-PackageVersion -PackageName "sageattention"
+    if ($sageState -eq $targetSageVersion) {
+        Write-Log "SageAttention is already at the required version: $sageState"
     } else {
-        $localSage = Get-ChildItem -LiteralPath $wheelsDir -Filter "sageattention-*.whl" -File | Select-Object -First 1
-        if (-not $localSage) {
-            Stop-WithMessage "The bundled SageAttention wheel is missing from the wheels folder; re-download the plugin package."
+        if ($sageState) {
+            Write-Log "SageAttention version mismatch: installed $sageState, required $targetSageVersion. Upgrading." "WARN"
+        } else {
+            Write-Log "SageAttention is not installed. Installing $targetSageVersion."
         }
-        Write-Log "Installing SageAttention from bundled wheel: $($localSage.Name)"
-        $args = @("-m", "pip", "install", $localSage.FullName, "--no-deps", "--disable-pip-version-check")
-        $exitCode = Invoke-NativeLogged -FilePath $venvPython -Arguments $args -WorkingDirectory $TargetRoot
-        if ($exitCode -ne 0) { Stop-WithMessage "Bundled SageAttention wheel installation failed with exit code $exitCode." }
+
+        $localSage = $null
+        if (Test-Path -LiteralPath $wheelsDir) {
+            $localSage = Get-ChildItem -LiteralPath $wheelsDir -Filter "sageattention-*.whl" -File |
+                Where-Object { $_.Name -like "sageattention-$targetSageVersion-*-abi3-win_amd64.whl" } |
+                Select-Object -First 1
+        }
+
+        $sageExit = 1
+        if ($localSage) {
+            Write-Log "Installing required SageAttention from bundled wheel: $($localSage.Name)"
+            $sageArgs = @("-m", "pip", "install", $localSage.FullName, "--upgrade", "--force-reinstall", "--no-deps", "--disable-pip-version-check")
+            $sageExit = Invoke-NativeLogged -FilePath $venvPython -Arguments $sageArgs -WorkingDirectory $TargetRoot
+            if ($sageExit -ne 0) {
+                Write-Log "Bundled SageAttention wheel installation failed; trying package indexes." "WARN"
+            }
+        } else {
+            Write-Log "Bundled SageAttention $targetSageVersion wheel was not found; trying package indexes." "WARN"
+        }
+        if ($sageExit -ne 0) {
+            $sageExit = Install-PackageFromIndexes -PackageSpec "sageattention==$targetSageVersion" -Label "SageAttention"
+        }
+        if ($sageExit -ne 0) { Stop-WithMessage "SageAttention $targetSageVersion installation failed with exit code $sageExit." }
     }
+
+    $tritonAfter = Get-PackageVersion -PackageName "triton_windows"
+    $sageAfter = Get-PackageVersion -PackageName "sageattention"
+    if ($tritonAfter -ne $targetTritonVersion) {
+        Stop-WithMessage "Triton verification failed. Required $targetTritonVersion, found '$tritonAfter'."
+    }
+    if ($sageAfter -ne $targetSageVersion) {
+        Stop-WithMessage "SageAttention verification failed. Required $targetSageVersion, found '$sageAfter'."
+    }
+    $importExit = Invoke-NativeLogged -FilePath $venvPython -Arguments @("-c", "import triton, sageattention; print('acceleration imports ok')") -WorkingDirectory $TargetRoot
+    if ($importExit -ne 0) { Stop-WithMessage "Triton/SageAttention import verification failed with exit code $importExit." }
+    Write-Log "Acceleration runtime verified: Triton $tritonAfter; SageAttention $sageAfter."
 }
 
 $pluginNames = @(
@@ -301,14 +389,17 @@ if ($AutoConfirm) {
     $answer = Read-Host "Type Y and press Enter to continue"
     if ($answer -notmatch "^[Yy]$") {
         Write-Log "Installation cancelled by user." "WARN"
+        Remove-Item -LiteralPath $tempConstraints -Force -ErrorAction SilentlyContinue
         exit 0
     }
 }
 
 $copiedPlugins = New-Object System.Collections.Generic.List[string]
+$copyFailures = New-Object System.Collections.Generic.List[string]
 
 foreach ($plugin in $pluginDirs) {
     $destination = Join-Path $targetNodes $plugin.Name
+    $backupDestination = $null
     $preserveAutoload = ($plugin.Name -eq "minimax_h3_workflow_autoload")
     $existingAutoload = $null
     if ($preserveAutoload) {
@@ -332,7 +423,19 @@ foreach ($plugin in $pluginDirs) {
         Write-Log "Plugin copied: $($plugin.Name)"
     }
     catch {
+        $copyFailures.Add($plugin.Name)
         Write-Log "Failed to copy plugin $($plugin.Name): $($_.Exception.Message)" "ERROR"
+        if (Test-Path -LiteralPath $destination) {
+            Remove-Item -LiteralPath $destination -Recurse -Force -ErrorAction SilentlyContinue
+        }
+        if ($backupDestination -and (Test-Path -LiteralPath $backupDestination)) {
+            try {
+                Move-Item -LiteralPath $backupDestination -Destination $destination -Force
+                Write-Log "Restored previous plugin after copy failure: $($plugin.Name)" "WARN"
+            } catch {
+                Write-Log "Could not restore previous plugin $($plugin.Name): $($_.Exception.Message)" "ERROR"
+            }
+        }
     }
     finally {
         if ($preserveAutoload -and $existingAutoload -and (Test-Path -LiteralPath (Join-Path $destination "web\autoload.js"))) {
@@ -341,6 +444,9 @@ foreach ($plugin in $pluginDirs) {
     }
 }
 
+if ($copyFailures.Count -gt 0) {
+    Stop-WithMessage "Plugin copy failed for: $($copyFailures -join ', '). Previous versions were restored where backups existed."
+}
 if ($copiedPlugins.Count -eq 0) {
     Stop-WithMessage "No plugins were copied successfully."
 }
@@ -411,23 +517,22 @@ if (
     Stop-WithMessage "Protected PyTorch runtime changed unexpectedly. Review log: $logPath"
 }
 
+Write-Log "Re-validating SageAttention and Triton after plugin dependencies."
+Install-OfflineAccelerationWheels
+
 Write-Log "Running pip check."
 $pipCheckExit = Invoke-NativeLogged -FilePath $venvPython -Arguments @("-m", "pip", "check") -WorkingDirectory $TargetRoot
 
-Write-Host ""
-if (($dependencyFailures.Count -eq 0) -and ($pipCheckExit -eq 0)) {
-    Write-Log "All plugins were copied and dependency checks passed."
-    Write-Host "Installation completed successfully."
+if ($dependencyFailures.Count -gt 0) {
+    Stop-WithMessage "Plugin dependency installation failed for: $($dependencyFailures -join ', '). See log: $logPath"
 }
-else {
-    Write-Log "Plugins were copied, but one or more dependency issues remain." "WARN"
-    if ($dependencyFailures.Count -gt 0) {
-        Write-Host "Plugins with dependency installation failures:"
-        foreach ($name in $dependencyFailures) { Write-Host ("  - " + $name) }
-    }
-    Write-Host ("See log: " + $logPath)
+if ($pipCheckExit -ne 0) {
+    Stop-WithMessage "pip check failed after plugin installation. See log: $logPath"
 }
 
+Write-Host ""
+Write-Log "All plugins were copied and dependency checks passed."
+Write-Host "Installation completed successfully."
 Write-Host ""
 Write-Host ("Protected runtime remains: torch " + $after.torch + ", CUDA " + $after.cuda)
 if (Test-Path -LiteralPath $backupRoot) {

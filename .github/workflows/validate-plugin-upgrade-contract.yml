@@ -1,0 +1,153 @@
+name: Validate step 2 upgrade contract
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  validate-step2-upgrade:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Parse plugin installer and runtime guard
+        shell: powershell
+        run: |
+          foreach ($path in @(
+            'step2-plugin-pack/Install-ComfyUI-Plugins-Safe.ps1',
+            'step2-plugin-pack/Check-Step2-Runtime.ps1'
+          )) {
+            $tokens = $null
+            $errors = $null
+            [void][Management.Automation.Language.Parser]::ParseFile((Resolve-Path $path), [ref]$tokens, [ref]$errors)
+            if ($errors.Count -gt 0) {
+              $errors | Format-List | Out-String | Write-Error
+              exit 1
+            }
+          }
+
+      - name: Validate Python and acceleration upgrade contract
+        shell: powershell
+        run: |
+          $scriptText = Get-Content 'step2-plugin-pack/Install-ComfyUI-Plugins-Safe.ps1' -Raw
+          foreach ($needle in @(
+            '$targetPythonVersion = "3.13.9"',
+            '$targetPythonTag = "cp313"',
+            '$targetTorchVersion = "2.12.0+cu130"',
+            '$targetTorchvisionVersion = "0.27.0+cu130"',
+            '$targetTorchaudioVersion = "2.11.0+cu130"',
+            '$targetCudaPrefix = "13.0"',
+            '$targetTritonVersion = "3.7.1.post27"',
+            '$targetSageVersion = "2.2.0+cu130torch2.10.0andhigher.post6"',
+            'Step 2 requires the default PyTorch 2.12 / CUDA 13.0 runtime',
+            '--force-reinstall',
+            '$copyFailures = New-Object',
+            'Restored previous plugin after copy failure',
+            'Plugin copy failed for:',
+            'Re-validating SageAttention and Triton after plugin dependencies',
+            'Triton/SageAttention import verification failed',
+            'Plugin dependency installation failed for:',
+            'pip check failed after plugin installation'
+          )) {
+            if (-not $scriptText.Contains($needle)) { throw "Step 2 upgrade contract is missing: $needle" }
+          }
+
+          $guard = Get-Content 'step2-plugin-pack/Check-Step2-Runtime.ps1' -Raw
+          foreach ($needle in @(
+            '$requiredPython = "3.13.9"',
+            '$requiredTorch = "2.12.0+cu130"',
+            '$requiredCudaPrefix = "13.0"',
+            '$requiredTriton = "3.7.1.post27"',
+            '$requiredSage = "2.2.0+cu130torch2.10.0andhigher.post6"',
+            'CUDA 12.6 / PyTorch 2.8 compatibility channel remains usable in step 1',
+            'Get-LatestPluginInstallLog',
+            'Get-PluginRunTimestampFromLog',
+            'Restore-FailedPluginBackups',
+            'Failed to copy plugin ([^:]+):',
+            'Dependency installation failed for ',
+            'Never delete',
+            'pip check failed after plugin installation',
+            'import triton, sageattention',
+            'function Invoke-Step2Python',
+            '$ErrorActionPreference = "Continue"',
+            'ExitCode = [int]$exitCode'
+          )) {
+            if (-not $guard.Contains($needle)) { throw "Step 2 runtime guard is missing: $needle" }
+          }
+
+          $pluginNames = @(
+            'comfyui_essentials',
+            'comfyui-crystools',
+            'comfyui-custom-scripts',
+            'comfyui-manager',
+            'comfyui-VideoHelperSuite',
+            'rgthree-comfy',
+            'comfyui-minimax-h3-audio-T8',
+            'comfyui-minimax-h3-blockcache-T8',
+            'ComfyUI-MiniMaxH3-AVCache-CN',
+            'SageAttention-MiniMaxH3-Safe',
+            'minimax_h3_workflow_autoload',
+            'TE-Speed-MiniMaxH3-OSS'
+          )
+          foreach ($name in $pluginNames) {
+            if (-not $scriptText.Contains(('"' + $name + '"'))) { throw "Plugin list is missing $name" }
+          }
+
+          $triton = 'step2-plugin-pack/wheels/triton_windows-3.7.1.post27-cp313-cp313-win_amd64.whl'
+          if (-not (Test-Path -LiteralPath $triton)) { throw 'Required cp313 Triton wheel is missing.' }
+          $sage = @(Get-ChildItem 'step2-plugin-pack/wheels' -Filter 'sageattention-2.2.0+cu130torch2.10.0andhigher.post6-*-abi3-win_amd64.whl' -File)
+          if ($sage.Count -ne 1) { throw "Expected exactly one required SageAttention wheel, found $($sage.Count)." }
+
+      - name: Exercise warning-safe Python probe on Windows PowerShell 5.1
+        shell: powershell
+        run: |
+          function Get-FunctionTextFromFile {
+            param([string]$Path, [string]$Name)
+            $tokens = $null
+            $errors = $null
+            $ast = [Management.Automation.Language.Parser]::ParseFile((Resolve-Path $Path), [ref]$tokens, [ref]$errors)
+            if ($errors.Count -gt 0) { throw "Could not parse $Path" }
+            $functionAst = $ast.Find({
+              param($node)
+              $node -is [Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -eq $Name
+            }, $true)
+            if (-not $functionAst) { throw "Function $Name was not found in $Path" }
+            return $functionAst.Extent.Text
+          }
+
+          Invoke-Expression (Get-FunctionTextFromFile 'step2-plugin-pack/Check-Step2-Runtime.ps1' 'Invoke-Step2Python')
+          $code = "import sys; sys.stderr.write('FutureWarning: simulated harmless warning\n'); print('ok')"
+          $quiet = Invoke-Step2Python -Python 'python' -Arguments @('-c', $code)
+          if ($quiet.ExitCode -ne 0 -or ($quiet.Output | Select-Object -Last 1) -ne 'ok') {
+            throw "Harmless stderr warning caused the quiet Python probe to fail."
+          }
+
+          $captured = Invoke-Step2Python -Python 'python' -Arguments @('-c', $code) -IncludeStderr
+          if ($captured.ExitCode -ne 0) { throw 'Captured warning probe returned a false failure.' }
+          if (-not (@($captured.Output | Where-Object { $_ -like '*FutureWarning*' }).Count -ge 1)) { throw 'Captured warning was not preserved for diagnostics.' }
+          if (($captured.Output | Select-Object -Last 1) -ne 'ok') { throw 'Captured probe lost normal stdout.' }
+
+      - name: Validate batch preflight and postflight order
+        shell: powershell
+        run: |
+          $bat = Get-Content 'step2-plugin-pack/Install-Plugins-Safe.bat' -Raw
+          foreach ($needle in @(
+            'Check-Step2-Runtime.ps1" -Phase Pre',
+            'Install-ComfyUI-Plugins-Safe.ps1" -AutoConfirm',
+            'set "installExit=%ERRORLEVEL%"',
+            'Check-Step2-Runtime.ps1" -Phase Post',
+            'set "postExit=%ERRORLEVEL%"'
+          )) {
+            if (-not $bat.Contains($needle)) { throw "Batch entry point is missing: $needle" }
+          }
+          $pre = $bat.IndexOf('-Phase Pre')
+          $install = $bat.IndexOf('Install-ComfyUI-Plugins-Safe.ps1')
+          $post = $bat.IndexOf('-Phase Post')
+          $installFailureBranch = $bat.IndexOf('if not "%installExit%"=="0"')
+          if (-not ($pre -lt $install -and $install -lt $post -and $post -lt $installFailureBranch)) {
+            throw 'Step 2 must run postflight after the installer before branching on the installer exit code.'
+          }

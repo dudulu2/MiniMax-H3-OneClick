@@ -1,0 +1,102 @@
+name: Validate existing-install upgrade
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  validate-existing-upgrade:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Parse upgrade repair scripts
+        shell: powershell
+        run: |
+          foreach ($path in @(
+            'step1-installer/Start-Installer.ps1',
+            'step1-installer/assets/upgrade_repair.ps1'
+          )) {
+            $tokens = $null
+            $errors = $null
+            [void][Management.Automation.Language.Parser]::ParseFile((Resolve-Path $path), [ref]$tokens, [ref]$errors)
+            if ($errors.Count -gt 0) {
+              $errors | Format-List | Out-String | Write-Error
+              exit 1
+            }
+          }
+
+      - name: Validate upgrade repair contract
+        shell: powershell
+        run: |
+          $repair = Get-Content 'step1-installer/assets/upgrade_repair.ps1' -Raw
+          foreach ($needle in @(
+            '$script:TargetPythonPatch = "3.13.9"',
+            '$script:TargetTritonVersion = "3.7.1.post27"',
+            '$script:TargetSageVersion = "2.2.0+cu130torch2.10.0andhigher.post6"',
+            'Get-MiniMaxRunningProcessesForUpgrade',
+            'comfyui-backups',
+            '"models", "user", "custom_nodes", "input", "output", "temp"',
+            '"extra_model_paths.yaml"',
+            'Removing stale ComfyUI application files',
+            'rollback was attempted',
+            'SageAttention acceleration is disabled for the CUDA 12.6 / PyTorch 2.8 compatibility channel',
+            '--force-reinstall --no-deps'
+          )) {
+            if (-not $repair.Contains($needle)) { throw "Upgrade repair contract is missing: $needle" }
+          }
+
+          $start = Get-Content 'step1-installer/Start-Installer.ps1' -Raw
+          $local = $start.IndexOf('local_torch_wheels.ps1')
+          $repairIndex = $start.IndexOf('upgrade_repair.ps1')
+          $cancel = $start.IndexOf('install_cancellation.ps1')
+          if ($local -lt 0 -or $repairIndex -lt 0 -or $cancel -lt 0) { throw 'Upgrade repair load order is incomplete.' }
+          if (-not ($local -lt $repairIndex -and $repairIndex -lt $cancel)) { throw 'upgrade_repair.ps1 must load after local torch helpers and before cancellation/UI overrides.' }
+
+      - name: Exercise clean ComfyUI core refresh with preserved user data
+        shell: powershell
+        run: |
+          function Install-PythonRuntime { param([string]$InstallRoot) return 'stub-python' }
+          function Invoke-Install {}
+          function Add-Log { param([string]$Message, [string]$Level = 'INFO') }
+          function Set-Stage { param([string]$Text, [int]$Percent = -1) }
+
+          . ./step1-installer/assets/upgrade_repair.ps1
+
+          $work = Join-Path $env:RUNNER_TEMP 'minimax-existing-upgrade-test'
+          Remove-Item -LiteralPath $work -Recurse -Force -ErrorAction SilentlyContinue
+          $install = Join-Path $work 'install'
+          $comfy = Join-Path $install 'ComfyUI'
+          foreach ($dir in @('models', 'user', 'custom_nodes', 'input', 'output', 'temp')) {
+            New-Item -ItemType Directory -Force -Path (Join-Path $comfy $dir) | Out-Null
+          }
+          'old-main' | Set-Content -LiteralPath (Join-Path $comfy 'main.py') -Encoding ASCII
+          'stale-core' | Set-Content -LiteralPath (Join-Path $comfy 'old_core.py') -Encoding ASCII
+          'user-workflow' | Set-Content -LiteralPath (Join-Path $comfy 'user\keep.json') -Encoding ASCII
+          'user-model' | Set-Content -LiteralPath (Join-Path $comfy 'models\keep.bin') -Encoding ASCII
+          'custom-paths' | Set-Content -LiteralPath (Join-Path $comfy 'extra_model_paths.yaml') -Encoding ASCII
+
+          $sourceRoot = Join-Path $work 'source'
+          $sourceComfy = Join-Path $sourceRoot 'ComfyUI'
+          New-Item -ItemType Directory -Force -Path (Join-Path $sourceComfy 'models') | Out-Null
+          'new-main' | Set-Content -LiteralPath (Join-Path $sourceComfy 'main.py') -Encoding ASCII
+          'new-core' | Set-Content -LiteralPath (Join-Path $sourceComfy 'new_core.py') -Encoding ASCII
+          'source-model-marker' | Set-Content -LiteralPath (Join-Path $sourceComfy 'models\source-marker.txt') -Encoding ASCII
+          $zip = Join-Path $work 'ComfyUI-source.zip'
+          Compress-Archive -Path $sourceComfy -DestinationPath $zip -Force
+
+          $result = Sync-ComfyUISource -SourceZip $zip -InstallRoot $install
+          if ([string]$result -ne [string]$comfy) { throw 'Sync-ComfyUISource returned the wrong ComfyUI root.' }
+          if (Test-Path -LiteralPath (Join-Path $comfy 'old_core.py')) { throw 'Stale ComfyUI core file survived the clean refresh.' }
+          if (-not (Test-Path -LiteralPath (Join-Path $comfy 'new_core.py'))) { throw 'New ComfyUI core file was not deployed.' }
+          if ((Get-Content (Join-Path $comfy 'main.py') -Raw).Trim() -ne 'new-main') { throw 'main.py was not refreshed.' }
+          if ((Get-Content (Join-Path $comfy 'user\keep.json') -Raw).Trim() -ne 'user-workflow') { throw 'User workflow was not preserved.' }
+          if ((Get-Content (Join-Path $comfy 'models\keep.bin') -Raw).Trim() -ne 'user-model') { throw 'Existing model was not preserved.' }
+          if ((Get-Content (Join-Path $comfy 'extra_model_paths.yaml') -Raw).Trim() -ne 'custom-paths') { throw 'extra_model_paths.yaml was not preserved.' }
+          if (-not (Test-Path -LiteralPath (Join-Path $comfy 'models\source-marker.txt'))) { throw 'Bundled protected-directory content was not merged.' }
+          $backup = @(Get-ChildItem (Join-Path $install 'comfyui-backups') -Recurse -Filter 'old_core.py' -File)
+          if ($backup.Count -ne 1) { throw "Expected one backup of old_core.py, found $($backup.Count)." }

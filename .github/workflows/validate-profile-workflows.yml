@@ -14,7 +14,7 @@ jobs:
       - name: Parse PowerShell files
         shell: powershell
         run: |
-          foreach ($path in @('step1-installer/Start-Installer.ps1', 'step1-installer/assets/workflow_profile_fix.ps1')) {
+          foreach ($path in @('step1-installer/Start-Installer.ps1', 'step1-installer/assets/workflow_profile_fix.ps1', 'step1-installer/assets/main_model_selector.ps1')) {
             $tokens = $null
             $errors = $null
             [void][Management.Automation.Language.Parser]::ParseFile((Resolve-Path $path), [ref]$tokens, [ref]$errors)
@@ -32,6 +32,7 @@ jobs:
           . (Join-Path $script:AssetsRoot 'workflow_profile_fix.ps1')
 
           $config = Get-Content step1-installer/assets/install_profiles.json -Raw | ConvertFrom-Json
+          $defaultTextEncoder = 'text_encoders/qwen3vl_32b_minimax_h3_int8_convrot.safetensors'
           $known = @(
             'minimax_h3_fl2va_pruned_int8_convrot.safetensors',
             'minimax_h3_fl2va_pruned_fp8_scaled.safetensors',
@@ -39,6 +40,10 @@ jobs:
           )
 
           foreach ($profile in @($config.profiles)) {
+            if ([string]$profile.text_encoder -ne $defaultTextEncoder) {
+              throw "Profile $($profile.id) does not use the default INT8 text encoder: $($profile.text_encoder)"
+            }
+
             $root = Join-Path $env:RUNNER_TEMP ("workflow-" + $profile.id)
             New-Item -ItemType Directory -Force -Path $root | Out-Null
             $name = New-ProfileWorkflow -ComfyRoot $root -Profile $profile
@@ -46,7 +51,9 @@ jobs:
             if (-not (Test-Path -LiteralPath $path)) { throw "Workflow was not created for $($profile.id)." }
             $json = Get-Content -LiteralPath $path -Raw
             $selected = Split-Path -Leaf ([string]$profile.diffusion_model)
+            $selectedTextEncoder = Split-Path -Leaf ([string]$profile.text_encoder)
             if (-not $json.Contains($selected)) { throw "Selected diffusion model is absent for $($profile.id)." }
+            if (-not $json.Contains($selectedTextEncoder)) { throw "Selected INT8 text encoder is absent for $($profile.id)." }
             foreach ($model in $known) {
               if ($model -ne $selected -and $json.Contains($model)) {
                 throw "Workflow $($profile.id) contains foreign diffusion model metadata: $model"
@@ -59,6 +66,10 @@ jobs:
         run: |
           $text = Get-Content step1-installer/Start-Installer.ps1 -Raw
           if ($text -notmatch 'workflow_profile_fix\.ps1') { throw 'Workflow override is not loaded.' }
-          if ($text -notmatch 'minimax-h3-workflow-\$\(\$Profile\.id\)-v2') { throw 'Autoload key was not refreshed.' }
+          if ($text -notmatch 'minimax-h3-workflow-\$\(\$Profile\.id\)-v2') { throw 'Base autoload key was not refreshed.' }
 
-
+          $selector = Get-Content step1-installer/assets/main_model_selector.ps1 -Raw
+          if ($selector -notmatch '\$textToken') { throw 'Model-specific autoload key does not include the text encoder.' }
+          if ($selector -notmatch 'minimax-h3-workflow-\$\(\$Profile\.id\)-\$modelToken-\$textToken-v4') {
+            throw 'Expected model-set autoload key was not found.'
+          }
