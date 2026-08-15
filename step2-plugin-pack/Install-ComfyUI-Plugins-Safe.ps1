@@ -19,8 +19,12 @@ if ([string]::IsNullOrWhiteSpace($env:PIP_DISABLE_PIP_VERSION_CHECK)) { $env:PIP
 $pluginIndexUrl = $env:PIP_INDEX_URL
 $pluginTimeout = if ($env:PIP_DEFAULT_TIMEOUT -match '^\d+$') { $env:PIP_DEFAULT_TIMEOUT } else { "120" }
 $pluginRetries = if ($env:PIP_RETRIES -match '^\d+$') { $env:PIP_RETRIES } else { "3" }
-$targetPythonVersion = "3.13"
+$targetPythonVersion = "3.13.9"
 $targetPythonTag = "cp313"
+$targetTorchVersion = "2.12.0+cu130"
+$targetTorchvisionVersion = "0.27.0+cu130"
+$targetTorchaudioVersion = "2.11.0+cu130"
+$targetCudaPrefix = "13.0"
 $targetTritonVersion = "3.7.1.post27"
 $targetSageVersion = "2.2.0+cu130torch2.10.0andhigher.post6"
 
@@ -76,7 +80,7 @@ New-Item -ItemType Directory -Force -Path $logRoot | Out-Null
 
 function Write-Log {
     param([string]$Message, [string]$Level = "INFO")
-    $line = "[{0}] [{1}] {2}" -f (Get-Date -Format "HH:mm:ss"), $Level, $Message
+    $line = "[{0}] [{1}] {2" -f (Get-Date -Format "HH:mm:ss"), $Level, $Message
     Write-Host $line
     Add-Content -LiteralPath $logPath -Value $line -Encoding UTF8
 }
@@ -86,6 +90,7 @@ function Stop-WithMessage {
     Write-Log $Message "ERROR"
     Write-Host ""
     Write-Host "Installation stopped. Review the log above before retrying."
+    Remove-Item -LiteralPath $tempConstraints -Force -ErrorAction SilentlyContinue
     exit 1
 }
 
@@ -171,7 +176,7 @@ if (-not (Test-Path -LiteralPath $venvPython)) {
     Stop-WithMessage "MiniMax H3 Python environment was not found: $venvPython"
 }
 
-$venvVersion = (& $venvPython -c "import sys; print('%d.%d' % sys.version_info[:2])" 2>$null | Select-Object -Last 1)
+$venvVersion = (& $venvPython -c "import platform; print(platform.python_version())" 2>$null | Select-Object -Last 1)
 if ([string]::IsNullOrWhiteSpace($venvVersion)) {
     Stop-WithMessage "Could not detect the Python version of the MiniMax H3 environment."
 }
@@ -192,6 +197,15 @@ if ($LASTEXITCODE -ne 0 -or -not $versionsJson) {
 }
 
 $versions = $versionsJson | ConvertFrom-Json
+if (
+    [string]$versions.torch -ne $targetTorchVersion -or
+    [string]$versions.torchvision -ne $targetTorchvisionVersion -or
+    [string]$versions.torchaudio -ne $targetTorchaudioVersion -or
+    [string]$versions.cuda -notlike "$targetCudaPrefix*"
+) {
+    Stop-WithMessage "Step 2 requires the default PyTorch 2.12 / CUDA 13.0 runtime. Current runtime: torch=$($versions.torch), torchvision=$($versions.torchvision), torchaudio=$($versions.torchaudio), CUDA=$($versions.cuda). Run step 1 Install / Repair and select the default CUDA 13.0 runtime first."
+}
+
 @"
 torch==$($versions.torch)
 torchvision==$($versions.torchvision)
@@ -334,6 +348,8 @@ function Install-OfflineAccelerationWheels {
     if ($sageAfter -ne $targetSageVersion) {
         Stop-WithMessage "SageAttention verification failed. Required $targetSageVersion, found '$sageAfter'."
     }
+    $importExit = Invoke-NativeLogged -FilePath $venvPython -Arguments @("-c", "import triton, sageattention; print('acceleration imports ok')") -WorkingDirectory $TargetRoot
+    if ($importExit -ne 0) { Stop-WithMessage "Triton/SageAttention import verification failed with exit code $importExit." }
     Write-Log "Acceleration runtime verified: Triton $tritonAfter; SageAttention $sageAfter."
 }
 
@@ -373,14 +389,17 @@ if ($AutoConfirm) {
     $answer = Read-Host "Type Y and press Enter to continue"
     if ($answer -notmatch "^[Yy]$") {
         Write-Log "Installation cancelled by user." "WARN"
+        Remove-Item -LiteralPath $tempConstraints -Force -ErrorAction SilentlyContinue
         exit 0
     }
 }
 
 $copiedPlugins = New-Object System.Collections.Generic.List[string]
+$copyFailures = New-Object System.Collections.Generic.List[string]
 
 foreach ($plugin in $pluginDirs) {
     $destination = Join-Path $targetNodes $plugin.Name
+    $backupDestination = $null
     $preserveAutoload = ($plugin.Name -eq "minimax_h3_workflow_autoload")
     $existingAutoload = $null
     if ($preserveAutoload) {
@@ -404,7 +423,19 @@ foreach ($plugin in $pluginDirs) {
         Write-Log "Plugin copied: $($plugin.Name)"
     }
     catch {
+        $copyFailures.Add($plugin.Name)
         Write-Log "Failed to copy plugin $($plugin.Name): $($_.Exception.Message)" "ERROR"
+        if (Test-Path -LiteralPath $destination) {
+            Remove-Item -LiteralPath $destination -Recurse -Force -ErrorAction SilentlyContinue
+        }
+        if ($backupDestination -and (Test-Path -LiteralPath $backupDestination)) {
+            try {
+                Move-Item -LiteralPath $backupDestination -Destination $destination -Force
+                Write-Log "Restored previous plugin after copy failure: $($plugin.Name)" "WARN"
+            } catch {
+                Write-Log "Could not restore previous plugin $($plugin.Name): $($_.Exception.Message)" "ERROR"
+            }
+        }
     }
     finally {
         if ($preserveAutoload -and $existingAutoload -and (Test-Path -LiteralPath (Join-Path $destination "web\autoload.js"))) {
@@ -413,6 +444,9 @@ foreach ($plugin in $pluginDirs) {
     }
 }
 
+if ($copyFailures.Count -gt 0) {
+    Stop-WithMessage "Plugin copy failed for: $($copyFailures -join ', '). Previous versions were restored where backups existed."
+}
 if ($copiedPlugins.Count -eq 0) {
     Stop-WithMessage "No plugins were copied successfully."
 }
@@ -483,23 +517,22 @@ if (
     Stop-WithMessage "Protected PyTorch runtime changed unexpectedly. Review log: $logPath"
 }
 
+Write-Log "Re-validating SageAttention and Triton after plugin dependencies."
+Install-OfflineAccelerationWheels
+
 Write-Log "Running pip check."
 $pipCheckExit = Invoke-NativeLogged -FilePath $venvPython -Arguments @("-m", "pip", "check") -WorkingDirectory $TargetRoot
 
-Write-Host ""
-if (($dependencyFailures.Count -eq 0) -and ($pipCheckExit -eq 0)) {
-    Write-Log "All plugins were copied and dependency checks passed."
-    Write-Host "Installation completed successfully."
+if ($dependencyFailures.Count -gt 0) {
+    Stop-WithMessage "Plugin dependency installation failed for: $($dependencyFailures -join ', '). See log: $logPath"
 }
-else {
-    Write-Log "Plugins were copied, but one or more dependency issues remain." "WARN"
-    if ($dependencyFailures.Count -gt 0) {
-        Write-Host "Plugins with dependency installation failures:"
-        foreach ($name in $dependencyFailures) { Write-Host ("  - " + $name) }
-    }
-    Write-Host ("See log: " + $logPath)
+if ($pipCheckExit -ne 0) {
+    Stop-WithMessage "pip check failed after plugin installation. See log: $logPath"
 }
 
+Write-Host ""
+Write-Log "All plugins were copied and dependency checks passed."
+Write-Host "Installation completed successfully."
 Write-Host ""
 Write-Host ("Protected runtime remains: torch " + $after.torch + ", CUDA " + $after.cuda)
 if (Test-Path -LiteralPath $backupRoot) {
