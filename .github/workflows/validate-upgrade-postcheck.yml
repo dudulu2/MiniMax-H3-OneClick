@@ -63,6 +63,7 @@ jobs:
           function Add-Log { param([string]$Message, [string]$Level = 'INFO') }
           function Set-Stage { param([string]$Text, [int]$Percent = -1) }
           function Resolve-ComfyEnvironmentResult { param([object[]]$Output); return $Output[0] }
+          function Get-InstalledTorchRuntime { param([string]$Python); return $null }
           function Install-SageAttentionRuntime { param([string]$Python, [string]$InstallRoot) }
           function Invoke-ProcessChecked { param([string]$FilePath, [string]$Arguments, [string]$WorkingDirectory, [switch]$AllowFailure); return $null }
 
@@ -86,6 +87,7 @@ jobs:
           function Add-Log { param([string]$Message, [string]$Level = 'INFO') }
           function Set-Stage { param([string]$Text, [int]$Percent = -1) }
           function Resolve-ComfyEnvironmentResult { param([object[]]$Output); return $Output[0] }
+          function Get-InstalledTorchRuntime { param([string]$Python); return $null }
           function Install-SageAttentionRuntime { param([string]$Python, [string]$InstallRoot) }
           function Invoke-ProcessChecked { param([string]$FilePath, [string]$Arguments, [string]$WorkingDirectory, [switch]$AllowFailure); return $null }
 
@@ -139,6 +141,7 @@ jobs:
             if ($matches.Count -ne 1) { throw "Expected one environment object, found $($matches.Count)." }
             return $matches[0]
           }
+          function Get-InstalledTorchRuntime { param([string]$Python); return $null }
           $script:SagePostCheckCalls = 0
           function Install-SageAttentionRuntime { param([string]$Python, [string]$InstallRoot); $script:SagePostCheckCalls++ }
           function Set-Stage { param([string]$Text, [int]$Percent = -1) }
