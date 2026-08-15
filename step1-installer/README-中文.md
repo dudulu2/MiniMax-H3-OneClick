@@ -51,11 +51,11 @@
 
 ## 升级已有安装目录
 
-选择原来的安装目录并点击 **Install / Repair** 即可就地升级。升级前请先运行 `Stop MiniMax H3.bat`。修复入口会检查该安装目录的 PID 文件以及目录下正在运行的 Python 进程；如果本目录的 ComfyUI/Python 仍在运行，会直接阻止替换核心文件和运行时，避免边运行边覆盖造成损坏。
+选择原来的安装目录并点击 **Install / Repair** 即可就地升级。升级前请先运行 `Stop MiniMax H3.bat`。修复入口会检查该安装目录的 PID 文件以及目录下正在运行的 Python 进程；如果本目录的 ComfyUI/Python 仍在运行，会直接阻止替换核心文件和运行时，避免边运行边覆盖造成损坏。若 PID 文件已经陈旧、指向的是安装目录之外的其他进程，则会忽略该 PID，不会误阻止修复。
 
-安装器会保留模型、`user\` 工作流、日志、启动器、PyTorch wheel 缓存以及 `downloads\` 中的断点文件。私有 Python 现在会精确校验到 `3.13.9`：只要不是目标补丁版本，就会删除旧虚拟环境和旧私有 Python，再安装 Python 3.13.9 并重建 venv。若 PyTorch 版本与所选运行时不一致，则先卸载旧 Torch/Torchvision/TorchAudio，再安装目标版本，最后刷新 ComfyUI requirements、执行 `pip check` 和 CUDA 校验。
+安装器会保留模型、`user\` 工作流、日志、启动器、PyTorch wheel 缓存以及 `downloads\` 中的断点文件。私有 Python 现在会精确校验到 `3.13.9`：只要不是目标补丁版本，就会删除旧虚拟环境和旧私有 Python，再安装 Python 3.13.9 并重建 venv。若 PyTorch 版本与所选运行时不一致，则先卸载旧 Torch/Torchvision/TorchAudio，再安装目标版本；ComfyUI requirements 更新后还会再次执行一次 SageAttention/Triton 精确修复与校验，随后再次执行 `pip check`，最后再做 CUDA 校验，避免依赖安装在后半程偷偷改掉加速栈。
 
-ComfyUI 本体升级也改成了更彻底但仍保护用户数据的方式：先把经过 SHA-256 校验的 `ComfyUI-source.zip` 解压到临时目录，再把当前非用户核心文件备份到 `comfyui-backups\<时间戳>\`，清掉旧核心残留，然后从临时目录干净重铺新版核心。以下位置会原地保留：`models\`、`user\`、`custom_nodes\`、`input\`、`output\`、`temp\`，以及根目录现有的 `extra_model_paths.yaml`。随包在这些受保护目录中的必要文件可以合并进去，但不会删除已有用户文件。如果核心复制失败，安装器会尝试从备份恢复旧核心。
+ComfyUI 本体升级也改成了更彻底但仍保护用户数据的方式：先把经过 SHA-256 校验的 `ComfyUI-source.zip` 解压到临时目录，再把当前非用户核心文件备份到 `comfyui-backups\<时间戳>\`，清掉旧核心残留，然后从临时目录干净重铺新版核心。以下位置会**完全原地保留，不把临时新版内容合并进去，也不覆盖同名文件**：`models\`、`user\`、`custom_nodes\`、`input\`、`output\`、`temp\`，以及根目录现有的 `extra_model_paths.yaml`。如果核心复制失败，安装器会尝试从备份恢复旧核心。
 
 旧但已经不再使用的模型文件不会自动删除。例如从旧 NVFP4 文本编码器升级到现在的 INT8 默认后，原来的 NVFP4 权重可能仍保留在模型目录中，方便确认新版运行正常后再手动清理，避免自动删错模型。
 
