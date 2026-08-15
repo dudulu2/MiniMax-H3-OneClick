@@ -52,6 +52,32 @@ jobs:
           )) {
             if (-not $text.Contains($needle)) { throw "Upgrade postcheck contract is missing: $needle" }
           }
+          if ($text.Contains('New-Object System.Collections.Generic.List[object]')) {
+            throw 'The process guard must not use Generic.List[object]; Windows PowerShell 5.1 can fail while converting it to an object array.'
+          }
+
+      - name: Exercise PowerShell 5.1 process-array guard
+        shell: powershell
+        run: |
+          function Install-ComfyEnvironment { param([string]$InstallRoot, [string]$BasePython, $Runtime); return [PSCustomObject]@{ ComfyRoot='C:\fake\ComfyUI'; Python='C:\fake\python.exe' } }
+          function Add-Log { param([string]$Message, [string]$Level = 'INFO') }
+          function Set-Stage { param([string]$Text, [int]$Percent = -1) }
+          function Resolve-ComfyEnvironmentResult { param([object[]]$Output); return $Output[0] }
+          function Install-SageAttentionRuntime { param([string]$Python, [string]$InstallRoot) }
+          function Invoke-ProcessChecked { param([string]$FilePath, [string]$Arguments, [string]$WorkingDirectory, [switch]$AllowFailure); return $null }
+
+          . ./step1-installer/assets/upgrade_postcheck.ps1
+
+          $fakeRoot = Join-Path $env:RUNNER_TEMP 'minimax-process-array-test'
+          $runtime = Join-Path $fakeRoot 'runtime'
+          New-Item -ItemType Directory -Force -Path $runtime | Out-Null
+          # Point the fake PID file at this PowerShell process. Its executable is
+          # outside $fakeRoot, so the guard must safely treat it as stale and
+          # return an empty native PowerShell array without a binder exception.
+          $PID | Set-Content -LiteralPath (Join-Path $runtime 'comfyui.pid') -Encoding ASCII
+          $result = @(Get-MiniMaxRunningProcessesForUpgrade -InstallRoot $fakeRoot)
+          if ($result.Count -ne 0) { throw "Expected stale PID to be ignored; got $($result.Count) process(es)." }
+          Write-Host "PowerShell $($PSVersionTable.PSVersion): process-array guard passed."
 
       - name: Exercise protected-directory clean core refresh
         shell: powershell
