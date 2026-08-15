@@ -11,6 +11,7 @@ $ErrorActionPreference = "Stop"
 $sourceRoot = Split-Path -Parent $MyInvocation.MyCommand.Path
 $wheelhouse = Join-Path $sourceRoot "wheels\dependencies"
 $manifestPath = Join-Path $sourceRoot "step2-wheel-sha256.txt"
+$lockPath = Join-Path $sourceRoot "step2-wheel-lock.txt"
 
 function Write-LocalWheelLog {
     param([string]$Message, [string]$Level = "INFO")
@@ -145,6 +146,15 @@ torchaudio==$($runtime.torchaudio)
         Get-Content -LiteralPath $runtimeConstraints |
             Where-Object { $_ -notmatch '^(torch|torchvision|torchaudio)==' } |
             Add-Content -LiteralPath $tempConstraints -Encoding ASCII
+    }
+
+    if (Test-Path -LiteralPath $lockPath -PathType Leaf) {
+        Get-Content -LiteralPath $lockPath |
+            Where-Object { $_ -and -not ([string]$_).Trim().StartsWith('#') } |
+            Add-Content -LiteralPath $tempConstraints -Encoding ASCII
+        Write-LocalWheelLog "Applied validated Step 2 dependency versions from step2-wheel-lock.txt."
+    } else {
+        Write-LocalWheelLog "step2-wheel-lock.txt is missing; using plugin requirements without the validated dependency pins." "WARN"
     }
 
     $pluginNames = @(
