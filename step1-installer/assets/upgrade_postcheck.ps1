@@ -1,4 +1,35 @@
 $script:InstallComfyEnvironmentBeforeUpgradePostCheck = (Get-Command Install-ComfyEnvironment -CommandType Function).ScriptBlock
+$script:GetInstalledTorchRuntimeBeforeUpgradePostCheck = (Get-Command Get-InstalledTorchRuntime -CommandType Function).ScriptBlock
+$script:InstallSageAttentionRuntimeBeforeUpgradePostCheck = (Get-Command Install-SageAttentionRuntime -CommandType Function).ScriptBlock
+
+# Windows PowerShell 5.1 converts native stderr text into ErrorRecord objects.
+# With the installer-wide ErrorActionPreference=Stop, a harmless Python warning
+# (notably torch's pynvml FutureWarning) can otherwise terminate Step 1 even
+# when Python exits successfully. Keep these two torch-import probes under
+# Continue and let their existing output/exit-code checks decide real failure.
+function Get-InstalledTorchRuntime {
+    param([string]$Python)
+
+    $previousPreference = $ErrorActionPreference
+    try {
+        $ErrorActionPreference = "Continue"
+        return (& $script:GetInstalledTorchRuntimeBeforeUpgradePostCheck -Python $Python)
+    } finally {
+        $ErrorActionPreference = $previousPreference
+    }
+}
+
+function Install-SageAttentionRuntime {
+    param([string]$Python, [string]$InstallRoot)
+
+    $previousPreference = $ErrorActionPreference
+    try {
+        $ErrorActionPreference = "Continue"
+        & $script:InstallSageAttentionRuntimeBeforeUpgradePostCheck -Python $Python -InstallRoot $InstallRoot
+    } finally {
+        $ErrorActionPreference = $previousPreference
+    }
+}
 
 function Get-MiniMaxRunningProcessesForUpgrade {
     param([string]$InstallRoot)
