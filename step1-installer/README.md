@@ -34,18 +34,24 @@ The default runtime for RTX 30, RTX 40, and RTX 50 series is:
 - Torchvision `0.27.0+cu130`
 - TorchAudio `2.11.0+cu130`
 - CUDA runtime `13.0`
+- Triton `3.7.1.post27`
+- SageAttention `2.2.0+cu130torch2.10.0andhigher.post6`
 
-PyTorch `2.8.0+cu126` / CUDA `12.6` remains selectable from **Change configuration** as a compatibility fallback.
+PyTorch `2.8.0+cu126` / CUDA `12.6` remains selectable from **Change configuration** as a compatibility fallback. The bundled SageAttention wheel is explicitly a CUDA 13 / Torch 2.10+ build, so the installer does **not** install that Sage/Triton acceleration pair on the CUDA 12.6 / PyTorch 2.8 fallback. Standard PyTorch attention remains available on that runtime.
 
 The installer verifies the exact package versions, CUDA availability, CUDA runtime version, and detected GPU before downloading the H3 models.
 
 ## Upgrade an existing installation
 
-Select the same installation directory and click **Install / Repair**. The installer preserves models, user workflows, logs, launchers, PyTorch wheel cache, and partial model downloads. If the private Python runtime is older than 3.13, its virtual environment is removed and rebuilt against Python 3.13.9. If the installed PyTorch runtime does not match the selected runtime, the old Torch/Torchvision/TorchAudio packages are removed and the matching set is installed. ComfyUI requirements are then refreshed with `--upgrade --upgrade-strategy only-if-needed`, followed by `pip check` and a CUDA verification run.
+Select the same installation directory and click **Install / Repair**. Stop MiniMax H3 first: the repair path checks the installation PID file and Python processes under the selected root and refuses to replace ComfyUI/Python files while they are still in use.
+
+The installer preserves models, user workflows, logs, launchers, PyTorch wheel cache, and partial model downloads. The private Python runtime is repaired to the exact `3.13.9` patch level; any other private Python patch/minor version causes the old virtual environment and private runtime to be rebuilt. If the installed PyTorch runtime does not match the selected runtime, the old Torch/Torchvision/TorchAudio packages are removed and the matching set is installed. ComfyUI requirements are then refreshed with `--upgrade --upgrade-strategy only-if-needed`, followed by `pip check` and a CUDA verification run.
 
 Existing RTX 30/40/50-series installations that are still on the older runtime are upgraded to PyTorch 2.12 CUDA 13.0 by default unless the CUDA 12.6 compatibility runtime is selected manually.
 
-The ComfyUI source archive is overlaid with `Expand-Archive -Force`. This updates bundled files while preserving `models/`, `user/`, logs, downloads, and other installation data. It is intentionally a repair/update operation rather than a destructive directory mirror, so obsolete files that disappeared upstream are not automatically deleted.
+For an existing ComfyUI tree, the verified `ComfyUI-source.zip` is first extracted into a staging directory. The active non-user ComfyUI application files are copied into `comfyui-backups/<timestamp>/`, stale core files are removed, and the staged source is deployed cleanly. The following user-owned locations are preserved in place: `models/`, `user/`, `custom_nodes/`, `input/`, `output/`, `temp/`, plus an existing root `extra_model_paths.yaml`. Bundled files inside preserved directories may be merged in without deleting existing user files. If the core refresh fails, the installer attempts to restore the previous application files from the backup.
+
+Old, no-longer-selected model weights are intentionally not deleted. For example, after upgrading from the previous NVFP4 text encoder default, the old NVFP4 file may remain beside the new INT8 model until the user removes it manually.
 
 ## Local and cached PyTorch wheels
 
@@ -62,9 +68,9 @@ The smaller PyTorch Python dependencies such as NumPy, Pillow, NetworkX, Jinja2,
 ## Installed stack
 
 - Fixed ComfyUI source `v0.32.0` bundled as `assets/ComfyUI-source.zip`
-- Private Python 3.13 runtime and virtual environment
+- Private Python 3.13.9 runtime and virtual environment
 - Selected PyTorch CUDA runtime
-- Triton 3.7.1 and SageAttention 2.2 installed from bundled wheels when present
+- Triton 3.7.1 and SageAttention 2.2 on the default CUDA 13 runtime
 - One selected FL2VA diffusion model
 - Qwen3-VL 32B MiniMax H3 INT8 ConvRot text encoder
 - MiniMax H3 video and audio VAEs
@@ -73,7 +79,7 @@ The smaller PyTorch Python dependencies such as NumPy, Pillow, NetworkX, Jinja2,
 
 The current installer deploys the standard FL2VA workflow for text generation and optional first/last frame conditioning. Ref2VA reference-image/video/audio weights are not installed by this version.
 
-The launcher does not use `--lowvram`; ComfyUI uses DynamicVRAM. The SageAttention 2.2 acceleration node is bundled and activated by the second installation step.
+The launcher does not use `--lowvram`; ComfyUI uses DynamicVRAM. The SageAttention 2.2 acceleration node is bundled by the second installation step for the default CUDA 13 runtime.
 
 ## Download routes and safety
 
@@ -94,9 +100,10 @@ PyTorch wheel downloads are stored in the installation's `downloads/torch-wheels
 2. Review the detected GPU/RAM and accept `Auto`, or choose one of the three profiles.
 3. Leave the default CUDA 13.0 runtime selected unless a compatibility fallback is needed.
 4. Select an installation folder and run **Check computer**.
-5. Click **Install / Repair**.
-6. After completion, run the second step (plugin pack) to add the workflows, plugins, and the SageAttention node.
-7. Use `Start MiniMax H3.bat` or the desktop shortcut.
-8. Use `Stop MiniMax H3.bat` before shutting down or moving the installation.
+5. If repairing an existing install, run `Stop MiniMax H3.bat` first.
+6. Click **Install / Repair**.
+7. On the default CUDA 13 runtime, run the second step (plugin pack) to add/update the 12 plugins and verify the SageAttention/Triton acceleration stack.
+8. Use `Start MiniMax H3.bat` or the desktop shortcut.
+9. Use `Stop MiniMax H3.bat` before shutting down or moving the installation.
 
 The full 50–68 GiB model downloads and generation performance still require end-to-end validation on representative RTX 3060, RTX 4090, and RTX 5090 systems before this branch is treated as a final release.
