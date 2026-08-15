@@ -34,7 +34,7 @@ jobs:
           foreach ($needle in @(
             'function Find-LocalPythonWheel',
             'Local wheel found for',
-            'downloads\\torch-wheels',
+            'downloads\torch-wheels',
             'Invoke-ResumableTorchWheelDownload'
           )) {
             if (-not $text.Contains($needle)) { throw "Step 1 local-wheel contract is missing: $needle" }
@@ -63,7 +63,7 @@ jobs:
         run: |
           $helper = Get-Content 'step2-plugin-pack/Install-Step2-Dependencies-LocalFirst.ps1' -Raw
           foreach ($needle in @(
-            'wheels\\dependencies',
+            'wheels\dependencies',
             'step2-wheel-sha256.txt',
             '"--no-index"',
             '"--find-links", $wheelhouse',
@@ -77,7 +77,7 @@ jobs:
           foreach ($needle in @(
             'Check-Step2-Runtime.ps1" -Phase Pre',
             'Install-Step2-Dependencies-LocalFirst.ps1',
-            'PIP_FIND_LINKS=%~dp0wheels\\dependencies',
+            'PIP_FIND_LINKS=%~dp0wheels\dependencies',
             'Install-ComfyUI-Plugins-Safe.ps1" -AutoConfirm',
             'Check-Step2-Runtime.ps1" -Phase Post'
           )) {
