@@ -1,0 +1,65 @@
+name: Validate Step 1 warning-safe probes
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  validate-step1-warning-safe-probes:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Parse Step 1 postcheck override
+        shell: powershell
+        run: |
+          $tokens = $null
+          $errors = $null
+          [void][Management.Automation.Language.Parser]::ParseFile(
+            (Resolve-Path 'step1-installer/assets/upgrade_postcheck.ps1'),
+            [ref]$tokens,
+            [ref]$errors
+          )
+          if ($errors.Count -gt 0) {
+            $errors | Format-List | Out-String | Write-Error
+            exit 1
+          }
+
+      - name: Exercise warning-safe torch probes on Windows PowerShell 5.1
+        shell: powershell
+        run: |
+          $python = (Get-Command python.exe -ErrorAction Stop).Source
+
+          function Add-Log { param([string]$Message, [string]$Level = 'INFO') }
+          function Set-Stage { param([string]$Text, [int]$Percent = -1) }
+          function Resolve-ComfyEnvironmentResult { param([object[]]$Output); return $Output[0] }
+          function Invoke-ProcessChecked { param([string]$FilePath, [string]$Arguments, [string]$WorkingDirectory, [switch]$AllowFailure); return 0 }
+
+          function Install-ComfyEnvironment {
+            param([string]$InstallRoot, [string]$BasePython, $Runtime)
+            return [PSCustomObject]@{ ComfyRoot='C:\fake\ComfyUI'; Python=$BasePython }
+          }
+
+          function Get-InstalledTorchRuntime {
+            param([string]$Python)
+            $value = (& $Python -c "import sys; sys.stderr.write('FutureWarning: pynvml warning\n'); print('runtime-ok')" 2>$null | Select-Object -Last 1)
+            return [string]$value
+          }
+
+          function Install-SageAttentionRuntime {
+            param([string]$Python, [string]$InstallRoot)
+            $value = (& $Python -c "import sys; sys.stderr.write('FutureWarning: pynvml warning\n'); print('sage-ok')" 2>$null | Select-Object -Last 1)
+            if ([string]$value -ne 'sage-ok') { throw 'Warning-safe Sage probe lost stdout.' }
+          }
+
+          . ./step1-installer/assets/upgrade_postcheck.ps1
+
+          $runtime = Get-InstalledTorchRuntime -Python $python
+          if ([string]$runtime -ne 'runtime-ok') { throw "Warning-safe runtime probe returned '$runtime'." }
+
+          Install-SageAttentionRuntime -Python $python -InstallRoot 'C:\fake'
+          Write-Host "PowerShell $($PSVersionTable.PSVersion): Step 1 warning-only stderr remained non-fatal."
