@@ -106,7 +106,8 @@ jobs:
           $comfyRoot = Join-Path $installRoot 'ComfyUI'
           Install-WorkflowAndLauncher -InstallRoot $installRoot -ComfyRoot $comfyRoot -VenvPython 'python.exe' -Profile $effective -Runtime ([PSCustomObject]@{}) -GpuIndex 0
           $autoload = Get-Content (Join-Path $comfyRoot 'custom_nodes\minimax_h3_workflow_autoload\web\autoload.js') -Raw
-          if ($autoload -notmatch 'minimax_h3_fl2va_int8_convrot-v3') { throw 'Autoload key does not include the selected main model.' }
+          $expectedKey = 'minimax_h3_fl2va_int8_convrot-qwen3vl_32b_minimax_h3_int8_convrot-v4'
+          if ($autoload -notmatch [regex]::Escape($expectedKey)) { throw 'Autoload key does not include the selected diffusion model and INT8 text encoder.' }
 
       - name: Verify configuration UI and load order
         shell: powershell
