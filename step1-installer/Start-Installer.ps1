@@ -5,6 +5,7 @@ $root = Split-Path -Parent $MyInvocation.MyCommand.Path
 $source = Join-Path $root "Install-MiniMaxH3.ps1"
 $torchOverride = Join-Path $root "assets\local_torch_wheels.ps1"
 $upgradeRepair = Join-Path $root "assets\upgrade_repair.ps1"
+$upgradePostCheck = Join-Path $root "assets\upgrade_postcheck.ps1"
 $cancellationOverride = Join-Path $root "assets\install_cancellation.ps1"
 $mainModelSelector = Join-Path $root "assets\main_model_selector.ps1"
 $runtimeSelector = Join-Path $root "assets\runtime_channel_selector.ps1"
@@ -15,6 +16,7 @@ $patched = Join-Path $root ".Install-MiniMaxH3.runtime.ps1"
 if (-not (Test-Path -LiteralPath $source)) { throw "Installer script is missing: $source" }
 if (-not (Test-Path -LiteralPath $torchOverride)) { throw "Local wheel support script is missing: $torchOverride" }
 if (-not (Test-Path -LiteralPath $upgradeRepair)) { throw "Upgrade repair support script is missing: $upgradeRepair" }
+if (-not (Test-Path -LiteralPath $upgradePostCheck)) { throw "Upgrade post-check support script is missing: $upgradePostCheck" }
 if (-not (Test-Path -LiteralPath $cancellationOverride)) { throw "Installation cancellation script is missing: $cancellationOverride" }
 if (-not (Test-Path -LiteralPath $mainModelSelector)) { throw "Main model selector script is missing: $mainModelSelector" }
 if (-not (Test-Path -LiteralPath $runtimeSelector)) { throw "Runtime channel selector script is missing: $runtimeSelector" }
@@ -26,6 +28,7 @@ $replacementLines = @(
     $needle,
     '. (Join-Path $script:AssetsRoot "local_torch_wheels.ps1")',
     '. (Join-Path $script:AssetsRoot "upgrade_repair.ps1")',
+    '. (Join-Path $script:AssetsRoot "upgrade_postcheck.ps1")',
     '. (Join-Path $script:AssetsRoot "install_cancellation.ps1")',
     '. (Join-Path $script:AssetsRoot "main_model_selector.ps1")',
     '. (Join-Path $script:AssetsRoot "runtime_channel_selector.ps1")',
