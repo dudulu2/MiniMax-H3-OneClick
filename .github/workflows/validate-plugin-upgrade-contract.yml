@@ -71,7 +71,10 @@ jobs:
             'Dependency installation failed for ',
             'Never delete',
             'pip check failed after plugin installation',
-            'import triton, sageattention'
+            'import triton, sageattention',
+            'function Invoke-Step2Python',
+            '$ErrorActionPreference = "Continue"',
+            'ExitCode = [int]$exitCode'
           )) {
             if (-not $guard.Contains($needle)) { throw "Step 2 runtime guard is missing: $needle" }
           }
@@ -98,6 +101,35 @@ jobs:
           if (-not (Test-Path -LiteralPath $triton)) { throw 'Required cp313 Triton wheel is missing.' }
           $sage = @(Get-ChildItem 'step2-plugin-pack/wheels' -Filter 'sageattention-2.2.0+cu130torch2.10.0andhigher.post6-*-abi3-win_amd64.whl' -File)
           if ($sage.Count -ne 1) { throw "Expected exactly one required SageAttention wheel, found $($sage.Count)." }
+
+      - name: Exercise warning-safe Python probe on Windows PowerShell 5.1
+        shell: powershell
+        run: |
+          function Get-FunctionTextFromFile {
+            param([string]$Path, [string]$Name)
+            $tokens = $null
+            $errors = $null
+            $ast = [Management.Automation.Language.Parser]::ParseFile((Resolve-Path $Path), [ref]$tokens, [ref]$errors)
+            if ($errors.Count -gt 0) { throw "Could not parse $Path" }
+            $functionAst = $ast.Find({
+              param($node)
+              $node -is [Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -eq $Name
+            }, $true)
+            if (-not $functionAst) { throw "Function $Name was not found in $Path" }
+            return $functionAst.Extent.Text
+          }
+
+          Invoke-Expression (Get-FunctionTextFromFile 'step2-plugin-pack/Check-Step2-Runtime.ps1' 'Invoke-Step2Python')
+          $code = "import sys; sys.stderr.write('FutureWarning: simulated harmless warning\n'); print('ok')"
+          $quiet = Invoke-Step2Python -Python 'python' -Arguments @('-c', $code)
+          if ($quiet.ExitCode -ne 0 -or ($quiet.Output | Select-Object -Last 1) -ne 'ok') {
+            throw "Harmless stderr warning caused the quiet Python probe to fail."
+          }
+
+          $captured = Invoke-Step2Python -Python 'python' -Arguments @('-c', $code) -IncludeStderr
+          if ($captured.ExitCode -ne 0) { throw 'Captured warning probe returned a false failure.' }
+          if (-not (@($captured.Output | Where-Object { $_ -like '*FutureWarning*' }).Count -ge 1)) { throw 'Captured warning was not preserved for diagnostics.' }
+          if (($captured.Output | Select-Object -Last 1) -ne 'ok') { throw 'Captured probe lost normal stdout.' }
 
       - name: Validate batch preflight and postflight order
         shell: powershell
