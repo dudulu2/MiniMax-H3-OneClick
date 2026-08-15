@@ -51,10 +51,44 @@ function Resolve-Step2Root {
     return $valid[0]
 }
 
+function Invoke-Step2Python {
+    param(
+        [string]$Python,
+        [string[]]$Arguments,
+        [switch]$IncludeStderr
+    )
+
+    # Windows PowerShell 5.1 can convert native stderr text into ErrorRecord
+    # objects. With the script-level ErrorActionPreference=Stop, a harmless
+    # Python FutureWarning can otherwise terminate the runtime check even when
+    # Python exits with code 0. Temporarily use Continue and judge success by
+    # the native process exit code instead.
+    $previousPreference = $ErrorActionPreference
+    try {
+        $ErrorActionPreference = "Continue"
+        if ($IncludeStderr) {
+            $rawOutput = @(& $Python @Arguments 2>&1)
+        } else {
+            $rawOutput = @(& $Python @Arguments 2>$null)
+        }
+        $exitCode = $LASTEXITCODE
+    } finally {
+        $ErrorActionPreference = $previousPreference
+    }
+
+    $lines = @($rawOutput | ForEach-Object { [string]$_ })
+    return [PSCustomObject]@{
+        ExitCode = [int]$exitCode
+        Output = $lines
+    }
+}
+
 function Get-PackageVersion {
     param([string]$Python, [string]$PackageName)
     $code = "import importlib.metadata as m,sys`ntry:`n print(m.version(sys.argv[1]))`nexcept Exception:`n print('')"
-    $value = (& $Python -c $code $PackageName 2>$null | Select-Object -Last 1)
+    $probe = Invoke-Step2Python -Python $Python -Arguments @("-c", $code, $PackageName)
+    if ($probe.ExitCode -ne 0) { return "" }
+    $value = ($probe.Output | Select-Object -Last 1)
     if ($null -eq $value) { return "" }
     return [string]$value
 }
@@ -113,12 +147,17 @@ try {
     $root = Resolve-Step2Root -RequestedRoot $TargetRoot
     $python = Join-Path $root "runtime\venv\Scripts\python.exe"
 
-    $pythonVersion = (& $python -c "import platform; print(platform.python_version())" 2>$null | Select-Object -Last 1)
+    $pythonProbe = Invoke-Step2Python -Python $python -Arguments @("-c", "import platform; print(platform.python_version())")
+    if ($pythonProbe.ExitCode -ne 0) { throw "Could not read the installed Python version." }
+    $pythonVersion = ($pythonProbe.Output | Select-Object -Last 1)
     if ([string]$pythonVersion -ne $requiredPython) {
         throw "Step 2 requires Python $requiredPython, but this installation uses Python $pythonVersion. Run step 1 Install / Repair first."
     }
 
-    $runtimeJson = (& $python -c "import json,torch,torchvision,torchaudio; print(json.dumps({'torch':torch.__version__,'torchvision':torchvision.__version__,'torchaudio':torchaudio.__version__,'cuda':str(torch.version.cuda or '')}))" 2>$null | Select-Object -Last 1)
+    $runtimeCode = "import json,torch,torchvision,torchaudio; print(json.dumps({'torch':torch.__version__,'torchvision':torchvision.__version__,'torchaudio':torchaudio.__version__,'cuda':str(torch.version.cuda or '')}))"
+    $runtimeProbe = Invoke-Step2Python -Python $python -Arguments @("-c", $runtimeCode)
+    if ($runtimeProbe.ExitCode -ne 0) { throw "Could not read the installed PyTorch runtime." }
+    $runtimeJson = ($runtimeProbe.Output | Select-Object -Last 1)
     if (-not $runtimeJson) { throw "Could not read the installed PyTorch runtime." }
     $runtime = $runtimeJson | ConvertFrom-Json
 
@@ -155,13 +194,13 @@ try {
         if ($triton -ne $requiredTriton) { [void]$failures.Add("Triton verification failed. Required $requiredTriton, found '$triton'.") }
         if ($sage -ne $requiredSage) { [void]$failures.Add("SageAttention verification failed. Required $requiredSage, found '$sage'.") }
 
-        $importCheck = & $python -c "import triton, sageattention; print('ok')" 2>$null
-        if ($LASTEXITCODE -ne 0 -or -not $importCheck) { [void]$failures.Add("Acceleration import verification failed.") }
+        $importProbe = Invoke-Step2Python -Python $python -Arguments @("-c", "import triton, sageattention; print('ok')")
+        $importCheck = ($importProbe.Output | Select-Object -Last 1)
+        if ($importProbe.ExitCode -ne 0 -or -not $importCheck) { [void]$failures.Add("Acceleration import verification failed.") }
 
-        $pipCheckOutput = @(& $python -m pip check 2>&1)
-        $pipCheckExit = $LASTEXITCODE
-        foreach ($line in $pipCheckOutput) { if ([string]$line) { Write-Host ([string]$line) } }
-        if ($pipCheckExit -ne 0) { [void]$failures.Add("pip check failed after plugin installation.") }
+        $pipProbe = Invoke-Step2Python -Python $python -Arguments @("-m", "pip", "check") -IncludeStderr
+        foreach ($line in $pipProbe.Output) { if ([string]$line) { Write-Host ([string]$line) } }
+        if ($pipProbe.ExitCode -ne 0) { [void]$failures.Add("pip check failed after plugin installation.") }
 
         if ($failures.Count -gt 0) {
             throw ($failures -join " ")
