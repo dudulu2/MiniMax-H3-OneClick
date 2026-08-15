@@ -2,6 +2,9 @@
 setlocal
 cd /d "%~dp0"
 
+set "NO_PAUSE=0"
+if /I "%~1"=="--no-pause" set "NO_PAUSE=1"
+
 rem Use the China PyPI mirror as the first network fallback. Local wheels are
 rem attempted before this source by Install-Step2-Dependencies-LocalFirst.ps1.
 set "PIP_INDEX_URL=https://pypi.tuna.tsinghua.edu.cn/simple"
@@ -52,5 +55,5 @@ exit /b 0
 :failed
 echo.
 echo Plugin installation or runtime verification failed. Review the message and log path printed above.
-pause
+if "%NO_PAUSE%"=="0" pause
 exit /b %exitCode%
