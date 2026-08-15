@@ -50,3 +50,13 @@ function Invoke-BasePyPiWithFallback {
 
     & $script:InvokeBasePyPiWithFallbackBeforeLocalWheelhouse -Python $Python -PackageArguments $PackageArguments
 }
+
+# This file is sourced immediately after hardware_profiles_install.ps1, so it is
+# also the Step 1 local-assets extension point. Load the model wrapper here so
+# local model discovery is installed after the profile-aware Install-H3Models
+# function exists, without changing the base interactive installer script.
+$localModelBundleScript = Join-Path $script:AssetsRoot "local_model_bundle.ps1"
+if (-not (Test-Path -LiteralPath $localModelBundleScript -PathType Leaf)) {
+    throw "Local model bundle support script is missing: $localModelBundleScript"
+}
+. $localModelBundleScript
