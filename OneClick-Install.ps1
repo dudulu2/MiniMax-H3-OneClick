@@ -31,12 +31,99 @@ function Show-FailureDialog {
     [Windows.Forms.MessageBox]::Show($Message, $title, "OK", "Error") | Out-Null
 }
 
+function Test-OneClickExistingInstallRoot {
+    param([string]$Path)
+    if ([string]::IsNullOrWhiteSpace($Path)) { return $false }
+    try {
+        $full = [IO.Path]::GetFullPath($Path)
+        return (
+            (Test-Path -LiteralPath (Join-Path $full "ComfyUI\main.py") -PathType Leaf) -and
+            (Test-Path -LiteralPath (Join-Path $full "runtime\venv\Scripts\python.exe") -PathType Leaf)
+        )
+    } catch {
+        return $false
+    }
+}
+
+function Get-OneClickFixedDrives {
+    $result = @()
+    foreach ($drive in [IO.DriveInfo]::GetDrives()) {
+        try {
+            if ($drive.DriveType -eq [IO.DriveType]::Fixed -and $drive.IsReady) {
+                $result += $drive
+            }
+        } catch {
+            # Ignore inaccessible or transient drive entries.
+        }
+    }
+    return $result
+}
+
 function Resolve-OneClickInstallRoot {
+    param(
+        [object[]]$FixedDrives = $null,
+        [string]$SystemDriveRoot = "",
+        [string]$LocalAppDataRoot = ""
+    )
+
+    # An explicit user/admin choice always wins. Step 1 still protects a
+    # non-empty unrelated target from unattended overwrite.
     if (-not [string]::IsNullOrWhiteSpace($env:MINIMAX_H3_ROOT)) {
         return [IO.Path]::GetFullPath($env:MINIMAX_H3_ROOT)
     }
-    if (Test-Path "D:\") { return "D:\MiniMaxH3" }
-    return (Join-Path $env:LOCALAPPDATA "MiniMaxH3")
+
+    if ($null -eq $FixedDrives) { $FixedDrives = @(Get-OneClickFixedDrives) }
+    if ([string]::IsNullOrWhiteSpace($SystemDriveRoot)) {
+        $SystemDriveRoot = [IO.Path]::GetPathRoot($env:SystemRoot)
+    }
+    if ([string]::IsNullOrWhiteSpace($LocalAppDataRoot)) {
+        $LocalAppDataRoot = $env:LOCALAPPDATA
+    }
+
+    # Existing installations always win over fresh-install defaults. Only the
+    # canonical <drive>:\MiniMaxH3 location is scanned automatically; custom
+    # nested locations remain opt-in via MINIMAX_H3_ROOT.
+    $existingRoots = @()
+    foreach ($drive in @($FixedDrives)) {
+        try {
+            $candidate = Join-Path ([string]$drive.RootDirectory.FullName) "MiniMaxH3"
+            if (Test-OneClickExistingInstallRoot -Path $candidate) {
+                $existingRoots += [IO.Path]::GetFullPath($candidate)
+            }
+        } catch {
+            # A broken drive entry must not block checking the remaining disks.
+        }
+    }
+    $existingRoots = @($existingRoots | Select-Object -Unique)
+
+    if ($existingRoots.Count -eq 1) {
+        Write-OneClickLog "Detected existing MiniMax H3 installation: $($existingRoots[0])"
+        return $existingRoots[0]
+    }
+    if ($existingRoots.Count -gt 1) {
+        $list = $existingRoots -join [Environment]::NewLine
+        throw ("Multiple MiniMax H3 installations were detected. The one-click installer will not guess which installation to modify.`r`n`r`n{0}`r`n`r`nSet MINIMAX_H3_ROOT to the installation you want to repair/upgrade, then run the one-click installer again." -f $list)
+    }
+
+    # Fresh install preference: D: first for compatibility with prior releases.
+    $dDrive = @($FixedDrives | Where-Object { [string]$_.Name -ieq "D:\" } | Select-Object -First 1)
+    if ($dDrive.Count -gt 0) {
+        return (Join-Path ([string]$dDrive[0].RootDirectory.FullName) "MiniMaxH3")
+    }
+
+    # If D: does not exist, prefer the roomiest fixed non-system disk. This
+    # handles common C:+E: machines without silently falling back to C:.
+    $nonSystem = @(
+        $FixedDrives |
+        Where-Object { -not ([string]$_.Name -ieq [string]$SystemDriveRoot) } |
+        Sort-Object -Property AvailableFreeSpace -Descending
+    )
+    if ($nonSystem.Count -gt 0) {
+        return (Join-Path ([string]$nonSystem[0].RootDirectory.FullName) "MiniMaxH3")
+    }
+
+    # Only the system disk is available.
+    return (Join-Path $LocalAppDataRoot "MiniMaxH3")
 }
 
 function Get-Step1FailureReason {
