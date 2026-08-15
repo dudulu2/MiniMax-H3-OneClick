@@ -7,3 +7,10 @@ step1-installer/downloads/
 step1-installer/logs/
 downloads/
 logs/
+
+# Optional local model payloads are intentionally user-supplied and can be
+# tens of GiB. Keep the folder instructions tracked, but never commit the
+# actual MiniMax/Qwen/VAE weight files from a locally assembled installer.
+step1-installer/models/**/*.safetensors
+step1-installer/models/**/*.gguf
+step1-installer/models/**/*.bin
