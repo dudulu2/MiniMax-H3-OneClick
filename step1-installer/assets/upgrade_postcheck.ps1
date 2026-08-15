@@ -43,6 +43,77 @@ function Get-MiniMaxRunningProcessesForUpgrade {
     return @($matches)
 }
 
+function Sync-ComfyUISource {
+    param([string]$SourceZip, [string]$InstallRoot)
+
+    $comfyRoot = Join-Path $InstallRoot "ComfyUI"
+    $existingInstall = Test-Path -LiteralPath (Join-Path $comfyRoot "main.py")
+    if (-not $existingInstall) {
+        Set-Stage "Deploying fixed ComfyUI source" -1
+        Expand-Archive -LiteralPath $SourceZip -DestinationPath $InstallRoot -Force
+        if (-not (Test-Path -LiteralPath (Join-Path $comfyRoot "main.py"))) { throw "ComfyUI source extraction failed." }
+        return $comfyRoot
+    }
+
+    $stageRoot = Join-Path $InstallRoot ("runtime\comfy-source-stage-" + [Guid]::NewGuid().ToString("N"))
+    $stagedComfy = Join-Path $stageRoot "ComfyUI"
+    $backupRoot = Join-Path $InstallRoot ("comfyui-backups\" + (Get-Date -Format "yyyyMMdd-HHmmss"))
+    $protectedDirectories = @("models", "user", "custom_nodes", "input", "output", "temp")
+    $protectedFiles = @("extra_model_paths.yaml")
+
+    New-Item -ItemType Directory -Force -Path $stageRoot | Out-Null
+    try {
+        Set-Stage "Staging fixed ComfyUI source" -1
+        Expand-Archive -LiteralPath $SourceZip -DestinationPath $stageRoot -Force
+        if (-not (Test-Path -LiteralPath (Join-Path $stagedComfy "main.py"))) { throw "Staged ComfyUI source is invalid." }
+
+        New-Item -ItemType Directory -Force -Path $backupRoot | Out-Null
+        Set-Stage "Backing up current ComfyUI application files" -1
+        foreach ($entry in @(Get-ChildItem -LiteralPath $comfyRoot -Force)) {
+            if ($entry.PSIsContainer -and $entry.Name -in $protectedDirectories) { continue }
+            if (-not $entry.PSIsContainer -and $entry.Name -in $protectedFiles) { continue }
+            Copy-Item -LiteralPath $entry.FullName -Destination $backupRoot -Recurse -Force
+        }
+
+        Set-Stage "Removing stale ComfyUI application files" -1
+        foreach ($entry in @(Get-ChildItem -LiteralPath $comfyRoot -Force)) {
+            if ($entry.PSIsContainer -and $entry.Name -in $protectedDirectories) { continue }
+            if (-not $entry.PSIsContainer -and $entry.Name -in $protectedFiles) { continue }
+            Remove-Item -LiteralPath $entry.FullName -Recurse -Force
+        }
+
+        Set-Stage "Deploying refreshed ComfyUI application files" -1
+        foreach ($entry in @(Get-ChildItem -LiteralPath $stagedComfy -Force)) {
+            # User/model/plugin data is outside the core refresh contract. Do not
+            # merge, overwrite, or add anything inside these protected locations.
+            if ($entry.PSIsContainer -and $entry.Name -in $protectedDirectories) { continue }
+            if (-not $entry.PSIsContainer -and $entry.Name -in $protectedFiles -and (Test-Path -LiteralPath (Join-Path $comfyRoot $entry.Name))) { continue }
+            Copy-Item -LiteralPath $entry.FullName -Destination $comfyRoot -Recurse -Force
+        }
+        if (-not (Test-Path -LiteralPath (Join-Path $comfyRoot "main.py"))) { throw "Refreshed ComfyUI source is missing main.py." }
+        Add-Log "Existing ComfyUI core was refreshed from a clean staged copy. Protected directories were left untouched: $($protectedDirectories -join ', '). Preserved root files: $($protectedFiles -join ', ')."
+        Add-Log "Previous ComfyUI application files were backed up to: $backupRoot"
+    } catch {
+        $refreshError = $_.Exception.Message
+        Add-Log "ComfyUI core refresh failed; restoring the previous application files from backup." "WARN"
+        if (Test-Path -LiteralPath $backupRoot) {
+            foreach ($entry in @(Get-ChildItem -LiteralPath $comfyRoot -Force -ErrorAction SilentlyContinue)) {
+                if ($entry.PSIsContainer -and $entry.Name -in $protectedDirectories) { continue }
+                if (-not $entry.PSIsContainer -and $entry.Name -in $protectedFiles) { continue }
+                Remove-Item -LiteralPath $entry.FullName -Recurse -Force -ErrorAction SilentlyContinue
+            }
+            foreach ($entry in @(Get-ChildItem -LiteralPath $backupRoot -Force -ErrorAction SilentlyContinue)) {
+                Copy-Item -LiteralPath $entry.FullName -Destination $comfyRoot -Recurse -Force
+            }
+        }
+        throw "ComfyUI core refresh failed and rollback was attempted: $refreshError"
+    } finally {
+        Remove-Item -LiteralPath $stageRoot -Recurse -Force -ErrorAction SilentlyContinue
+    }
+
+    return $comfyRoot
+}
+
 function Install-ComfyEnvironment {
     param([string]$InstallRoot, [string]$BasePython, $Runtime)
 
