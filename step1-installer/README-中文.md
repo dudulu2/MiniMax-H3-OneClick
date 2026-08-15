@@ -7,7 +7,9 @@
 - Windows 10/11 64 位，需有桌面环境
 - NVIDIA RTX 3060 级别到 RTX 5090 级别显卡
 - 兼容配置最低要求：8 GB 显存、16 GB 系统内存
+- 默认运行环境为 PyTorch 2.12 / CUDA 13.0
 - CUDA 13.0 运行环境建议 NVIDIA 驱动 580 或更新
+- PyTorch 2.8 / CUDA 12.6 保留为手动兼容通道
 - 安装期间需要联网（也可用随包离线 wheel 与内置镜像减少下载）
 
 存在多张 NVIDIA 显卡时，安装器会默认选择显存最大的一张，并通过 `CUDA_VISIBLE_DEVICES` 把对应物理 GPU 编号写入启动器。
@@ -32,23 +34,37 @@
 
 ## CUDA 运行环境自动选择
 
-- 默认运行环境：PyTorch `2.12.0+cu130`、Torchvision `0.27.0+cu130`、TorchAudio `2.11.0+cu130`，适用于全部受支持的 RTX 30/40/50 系显卡
-- 手动兼容通道：PyTorch `2.8.0+cu126` / CUDA `12.6`，从 **Change configuration** 中选择
+默认运行环境：
+
+- PyTorch `2.12.0+cu130`
+- Torchvision `0.27.0+cu130`
+- TorchAudio `2.11.0+cu130`
+- CUDA `13.0`
+- Triton `3.7.1.post27`
+- SageAttention `2.2.0+cu130torch2.10.0andhigher.post6`
+
+手动兼容通道为 PyTorch `2.8.0+cu126` / CUDA `12.6`，可从 **Change configuration** 中选择。
+
+需要特别说明：仓库随包的 SageAttention wheel 明确针对 **CUDA 13 / Torch 2.10+**。因此选择 CUDA 12.6 / PyTorch 2.8 兼容通道时，第一步不会安装这组 SageAttention/Triton 加速包；如果旧环境里残留了这组 CUDA13 加速包，修复过程会将其移除，继续使用标准 PyTorch attention。这样可以避免把已知不匹配的 CUDA13 wheel 强行塞进兼容环境。
 
 开始下载 H3 模型前，安装器会验证精确版本、CUDA 是否可用、CUDA 运行时版本以及实际识别到的显卡。
 
 ## 升级已有安装目录
 
-选择原来的安装目录并点击 **Install / Repair** 即可就地升级。安装器会保留模型、`user\` 工作流、日志、启动器、PyTorch wheel 缓存以及 `downloads\` 中的断点文件。若私有 Python 版本低于 3.13，会删除旧虚拟环境和旧私有 Python，再安装 Python 3.13.9 并重建 venv；若 PyTorch 版本与所选运行时不一致，则先卸载旧 Torch/Torchvision/TorchAudio，再安装目标版本，最后刷新 ComfyUI requirements、执行 `pip check` 和 CUDA 校验。
+选择原来的安装目录并点击 **Install / Repair** 即可就地升级。升级前请先运行 `Stop MiniMax H3.bat`。修复入口会检查该安装目录的 PID 文件以及目录下正在运行的 Python 进程；如果本目录的 ComfyUI/Python 仍在运行，会直接阻止替换核心文件和运行时，避免边运行边覆盖造成损坏。
 
-ComfyUI 本体使用 `Expand-Archive -Force` 覆盖新版压缩包，因此属于“保留用户数据的修复/升级”，不是破坏性的目录镜像同步。也就是说，新版同名文件会更新，但上游已经删除、而旧目录仍残留的文件不会被自动清理。
+安装器会保留模型、`user\` 工作流、日志、启动器、PyTorch wheel 缓存以及 `downloads\` 中的断点文件。私有 Python 现在会精确校验到 `3.13.9`：只要不是目标补丁版本，就会删除旧虚拟环境和旧私有 Python，再安装 Python 3.13.9 并重建 venv。若 PyTorch 版本与所选运行时不一致，则先卸载旧 Torch/Torchvision/TorchAudio，再安装目标版本，最后刷新 ComfyUI requirements、执行 `pip check` 和 CUDA 校验。
+
+ComfyUI 本体升级也改成了更彻底但仍保护用户数据的方式：先把经过 SHA-256 校验的 `ComfyUI-source.zip` 解压到临时目录，再把当前非用户核心文件备份到 `comfyui-backups\<时间戳>\`，清掉旧核心残留，然后从临时目录干净重铺新版核心。以下位置会原地保留：`models\`、`user\`、`custom_nodes\`、`input\`、`output\`、`temp\`，以及根目录现有的 `extra_model_paths.yaml`。随包在这些受保护目录中的必要文件可以合并进去，但不会删除已有用户文件。如果核心复制失败，安装器会尝试从备份恢复旧核心。
+
+旧但已经不再使用的模型文件不会自动删除。例如从旧 NVFP4 文本编码器升级到现在的 INT8 默认后，原来的 NVFP4 权重可能仍保留在模型目录中，方便确认新版运行正常后再手动清理，避免自动删错模型。
 
 ## 安装内容
 
 - 固定版本 ComfyUI：`assets/ComfyUI-source.zip`（ComfyUI v0.32.0，SHA-256 校验）
-- 独立 Python 3.13 和虚拟环境，不污染系统 Python
-- 根据显卡自动选择的 PyTorch CUDA 运行环境
-- 随包 wheel 优先安装 Triton 3.7.1 与 SageAttention 2.2（离线可用）
+- 独立 Python 3.13.9 和虚拟环境，不污染系统 Python
+- 根据显卡/手动选择的 PyTorch CUDA 运行环境
+- 默认 CUDA13 环境使用随包 Triton 3.7.1 与 SageAttention 2.2
 - 所选配置对应的一份 FL2VA 扩散模型
 - Qwen3-VL 32B MiniMax H3 INT8 ConvRot 文本编码器
 - MiniMax H3 视频 VAE 和音频 VAE
@@ -57,7 +73,16 @@ ComfyUI 本体使用 `Expand-Archive -Force` 覆盖新版压缩包，因此属�
 
 当前版本安装的是标准 FL2VA 工作流，支持文生视频以及可选首帧/尾帧条件。Ref2VA 的参考图片、参考视频和参考音频权重暂未包含在这一版安装器中。
 
-启动时不使用 `--lowvram`，由 PyTorch DynamicVRAM 管理显存。SageAttention 2.2 加速节点已随包提供，由第二步插件包安装并启用。
+启动时不使用 `--lowvram`，由 PyTorch DynamicVRAM 管理显存。第二步插件包会为默认 CUDA13 运行环境安装/更新 12 个插件与 SageAttention 节点。
+
+## 第二步插件包的运行时限制
+
+`step2-plugin-pack\Install-Plugins-Safe.bat` 现在会执行前后两次运行时检查：
+
+1. 安装插件前，要求 Python `3.13.9`、PyTorch `2.12.0+cu130`、CUDA `13.0`；如果是旧 Python 或 CUDA12.6/PyTorch2.8 兼容通道，会在修改插件前停止并提示先运行第一步 **Install / Repair** 或切回默认运行时。
+2. 12 个插件及 requirements 安装完成后，再次检查 Triton `3.7.1.post27`、SageAttention `2.2.0+cu130torch2.10.0andhigher.post6`，并实际导入 `triton` 与 `sageattention`，防止某个插件依赖把加速栈偷偷换掉。
+
+已有的受管插件目录仍会先移动到 `plugin-backups\<时间戳>\`，再复制新版，因此第二步可以重复执行用于插件更新。
 
 ## 下载与校验
 
@@ -67,11 +92,12 @@ ComfyUI 本体使用 `Expand-Archive -Force` 覆盖新版压缩包，因此属�
 
 1. 双击 `Start-Installer.bat`。
 2. 查看检测到的显卡和内存，接受 `Auto` 推荐，或手动选择三种配置之一。
-3. 保持默认 CUDA 13.0 运行环境（除非需要兼容通道）。
+3. 保持默认 CUDA 13.0 运行环境（除非确实需要兼容通道）。
 4. 选择安装目录并点击 **Check computer**。
-5. 点击 **Install / Repair**。
-6. 安装完成后运行第二步插件包，安装 12 个插件与 SageAttention 节点。
-7. 运行 `Start MiniMax H3.bat` 或桌面快捷方式。
-8. 关机或移动安装目录前运行 `Stop MiniMax H3.bat`。
+5. 如果是升级旧目录，先运行 `Stop MiniMax H3.bat`。
+6. 点击 **Install / Repair**。
+7. 使用默认 CUDA13 运行环境时，再运行第二步插件包，安装/更新 12 个插件并校验 SageAttention/Triton。
+8. 运行 `Start MiniMax H3.bat` 或桌面快捷方式。
+9. 关机或移动安装目录前运行 `Stop MiniMax H3.bat`。
 
-目前代码和静态校验已经覆盖三种配置，但约 50–68 GiB 模型的完整下载和实际生成性能，仍需分别在 RTX 3060、RTX 4090 和 RTX 5090 代表机器上做端到端实测后，才能作为正式发布版本。
+目前代码和静态/合成升级校验已经覆盖三种模型配置与已有目录刷新逻辑，但约 50–68 GiB 模型的完整下载和实际生成性能，仍需分别在 RTX 3060、RTX 4090 和 RTX 5090 代表机器上做端到端实测后，才能作为正式发布版本。
