@@ -19,7 +19,7 @@ function Invoke-Step1LocalWheelAttempt {
     $wheelhouse = Get-Step1DependencyWheelhouse
     if (-not $wheelhouse) { return $false }
 
-    Add-Log "Trying local Step 1 dependency wheelhouse first for $Label: $wheelhouse"
+    Add-Log "Trying local Step 1 dependency wheelhouse first for ${Label}: $wheelhouse"
     $arguments = "-m pip $PackageArguments --no-index --find-links `"$wheelhouse`" --disable-pip-version-check"
     $exitCode = Invoke-ProcessChecked $Python $arguments $script:InstallerRoot -AllowFailure
     if ($exitCode -eq 0) {
