@@ -13,14 +13,14 @@
       "resolution": "608x352",
       "duration_seconds": 5,
       "diffusion_model": "diffusion_models/minimax_h3_fl2va_pruned_int8_convrot.safetensors",
-      "text_encoder": "text_encoders/qwen3vl_32b_minimax_h3_nvfp4_awq.safetensors",
+      "text_encoder": "text_encoders/qwen3vl_32b_minimax_h3_int8_convrot.safetensors",
       "video_vae": "vae/minimax_h3_video_vae_fp16.safetensors",
       "audio_vae": "vae/minimax_h3_audio_vae_fp32.safetensors"
     },
     {
       "id": "balanced_4090_32gb",
       "label": "Balanced - RTX 4090/5090 with 32 GB RAM",
-      "summary": "24 GB+ VRAM profile using the pruned FP8 diffusion model and NVFP4 text encoder. Defaults to 864x480.",
+      "summary": "24 GB+ VRAM profile using the pruned FP8 diffusion model and INT8 text encoder. Defaults to 864x480.",
       "min_vram_mib": 22000,
       "min_ram_gib": 30,
       "required_free_gib": 60,
@@ -28,7 +28,7 @@
       "resolution": "864x480",
       "duration_seconds": 5,
       "diffusion_model": "diffusion_models/minimax_h3_fl2va_pruned_fp8_scaled.safetensors",
-      "text_encoder": "text_encoders/qwen3vl_32b_minimax_h3_nvfp4_awq.safetensors",
+      "text_encoder": "text_encoders/qwen3vl_32b_minimax_h3_int8_convrot.safetensors",
       "video_vae": "vae/minimax_h3_video_vae_fp16.safetensors",
       "audio_vae": "vae/minimax_h3_audio_vae_fp32.safetensors"
     },
