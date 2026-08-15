@@ -1,0 +1,74 @@
+name: Validate step 2 upgrade contract
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  validate-step2-upgrade:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Parse plugin installer
+        shell: powershell
+        run: |
+          $path = Resolve-Path 'step2-plugin-pack/Install-ComfyUI-Plugins-Safe.ps1'
+          $tokens = $null
+          $errors = $null
+          [void][Management.Automation.Language.Parser]::ParseFile($path, [ref]$tokens, [ref]$errors)
+          if ($errors.Count -gt 0) {
+            $errors | Format-List | Out-String | Write-Error
+            exit 1
+          }
+
+      - name: Validate Python and acceleration upgrade contract
+        shell: powershell
+        run: |
+          $scriptText = Get-Content 'step2-plugin-pack/Install-ComfyUI-Plugins-Safe.ps1' -Raw
+          foreach ($needle in @(
+            '$targetPythonVersion = "3.13"',
+            '$targetPythonTag = "cp313"',
+            '$targetTritonVersion = "3.7.1.post27"',
+            '$targetSageVersion = "2.2.0+cu130torch2.10.0andhigher.post6"',
+            'Re-run step1-installer\Start-Installer.bat with Install / Repair first',
+            '--force-reinstall',
+            'Get-PackageVersion',
+            'Acceleration runtime verified'
+          )) {
+            if (-not $scriptText.Contains($needle)) { throw "Step 2 upgrade contract is missing: $needle" }
+          }
+
+          $pluginNames = @(
+            'comfyui_essentials',
+            'comfyui-crystools',
+            'comfyui-custom-scripts',
+            'comfyui-manager',
+            'comfyui-VideoHelperSuite',
+            'rgthree-comfy',
+            'comfyui-minimax-h3-audio-T8',
+            'comfyui-minimax-h3-blockcache-T8',
+            'ComfyUI-MiniMaxH3-AVCache-CN',
+            'SageAttention-MiniMaxH3-Safe',
+            'minimax_h3_workflow_autoload',
+            'TE-Speed-MiniMaxH3-OSS'
+          )
+          foreach ($name in $pluginNames) {
+            if (-not $scriptText.Contains(('"' + $name + '"'))) { throw "Plugin list is missing $name" }
+          }
+
+          $triton = 'step2-plugin-pack/wheels/triton_windows-3.7.1.post27-cp313-cp313-win_amd64.whl'
+          if (-not (Test-Path -LiteralPath $triton)) { throw 'Required cp313 Triton wheel is missing.' }
+          $sage = @(Get-ChildItem 'step2-plugin-pack/wheels' -Filter 'sageattention-2.2.0+cu130torch2.10.0andhigher.post6-*-abi3-win_amd64.whl' -File)
+          if ($sage.Count -ne 1) { throw "Expected exactly one required SageAttention wheel, found $($sage.Count)." }
+
+      - name: Validate batch entry point
+        shell: powershell
+        run: |
+          $bat = Get-Content 'step2-plugin-pack/Install-Plugins-Safe.bat' -Raw
+          if (-not $bat.Contains('Install-ComfyUI-Plugins-Safe.ps1')) { throw 'Batch entry point no longer invokes the safe plugin installer.' }
+          if (-not $bat.Contains('-AutoConfirm')) { throw 'Batch entry point no longer uses automatic confirmation.' }
