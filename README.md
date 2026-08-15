@@ -25,9 +25,9 @@ The manual CUDA 12.6 / PyTorch 2.8 compatibility channel remains available in st
 
 ## Local wheel priority
 
-### Step 1 runtime wheels
+### Step 1 runtime and dependency wheels
 
-Step 1 checks for a matching wheel under the Step 1 installer package before downloading PyTorch. The recommended folder is `step1-installer/assets/wheels/`.
+Step 1 checks for a matching runtime wheel under the Step 1 installer package before downloading PyTorch. The recommended runtime-wheel folder is `step1-installer/assets/wheels/`.
 
 For the default Windows x64 / Python 3.13.9 / CUDA 13 runtime, a full package can include:
 
@@ -35,7 +35,13 @@ For the default Windows x64 / Python 3.13.9 / CUDA 13 runtime, a full package ca
 - `torchvision-0.27.0+cu130-cp313-cp313-win_amd64.whl`
 - `torchaudio-2.11.0+cu130-cp313-cp313-win_amd64.whl`
 
-The Step 1 order is: **bundled matching wheel -> existing target cache under `downloads/torch-wheels/` -> configured mirror/official download source**. The exact bundled Triton and SageAttention wheels are also used locally first on the default CUDA 13 runtime.
+The Step 1 PyTorch order is: **bundled matching wheel -> existing target cache under `downloads/torch-wheels/` -> configured mirror/official download source**. The exact bundled Triton and SageAttention wheels are also used locally first on the default CUDA 13 runtime.
+
+For ordinary small Python dependencies, an optional wheelhouse can be placed at:
+
+`step1-installer/assets/wheels/dependencies/`
+
+When that directory contains wheels, Step 1 first attempts the Python toolchain packages, ordinary PyTorch Python dependencies, and ComfyUI requirements completely offline with `--no-index --find-links`. If the local wheelhouse cannot satisfy a request completely, Step 1 falls back to its normal configured package sources.
 
 ### Step 2 plugin dependency wheels
 
