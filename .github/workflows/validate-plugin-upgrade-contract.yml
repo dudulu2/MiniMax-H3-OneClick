@@ -14,16 +14,20 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Parse plugin installer
+      - name: Parse plugin installer and runtime guard
         shell: powershell
         run: |
-          $path = Resolve-Path 'step2-plugin-pack/Install-ComfyUI-Plugins-Safe.ps1'
-          $tokens = $null
-          $errors = $null
-          [void][Management.Automation.Language.Parser]::ParseFile($path, [ref]$tokens, [ref]$errors)
-          if ($errors.Count -gt 0) {
-            $errors | Format-List | Out-String | Write-Error
-            exit 1
+          foreach ($path in @(
+            'step2-plugin-pack/Install-ComfyUI-Plugins-Safe.ps1',
+            'step2-plugin-pack/Check-Step2-Runtime.ps1'
+          )) {
+            $tokens = $null
+            $errors = $null
+            [void][Management.Automation.Language.Parser]::ParseFile((Resolve-Path $path), [ref]$tokens, [ref]$errors)
+            if ($errors.Count -gt 0) {
+              $errors | Format-List | Out-String | Write-Error
+              exit 1
+            }
           }
 
       - name: Validate Python and acceleration upgrade contract
@@ -41,6 +45,21 @@ jobs:
             'Acceleration runtime verified'
           )) {
             if (-not $scriptText.Contains($needle)) { throw "Step 2 upgrade contract is missing: $needle" }
+          }
+
+          $guard = Get-Content 'step2-plugin-pack/Check-Step2-Runtime.ps1' -Raw
+          foreach ($needle in @(
+            '$requiredPython = "3.13.9"',
+            '$requiredTorch = "2.12.0+cu130"',
+            '$requiredCudaPrefix = "13.0"',
+            '$requiredTriton = "3.7.1.post27"',
+            '$requiredSage = "2.2.0+cu130torch2.10.0andhigher.post6"',
+            'CUDA 12.6 / PyTorch 2.8 compatibility channel remains usable in step 1',
+            'Post-install Triton verification failed',
+            'Post-install SageAttention verification failed',
+            'import triton, sageattention'
+          )) {
+            if (-not $guard.Contains($needle)) { throw "Step 2 runtime guard is missing: $needle" }
           }
 
           $pluginNames = @(
@@ -66,9 +85,14 @@ jobs:
           $sage = @(Get-ChildItem 'step2-plugin-pack/wheels' -Filter 'sageattention-2.2.0+cu130torch2.10.0andhigher.post6-*-abi3-win_amd64.whl' -File)
           if ($sage.Count -ne 1) { throw "Expected exactly one required SageAttention wheel, found $($sage.Count)." }
 
-      - name: Validate batch entry point
+      - name: Validate batch preflight and postflight order
         shell: powershell
         run: |
           $bat = Get-Content 'step2-plugin-pack/Install-Plugins-Safe.bat' -Raw
-          if (-not $bat.Contains('Install-ComfyUI-Plugins-Safe.ps1')) { throw 'Batch entry point no longer invokes the safe plugin installer.' }
-          if (-not $bat.Contains('-AutoConfirm')) { throw 'Batch entry point no longer uses automatic confirmation.' }
+          foreach ($needle in @('Check-Step2-Runtime.ps1" -Phase Pre', 'Install-ComfyUI-Plugins-Safe.ps1" -AutoConfirm', 'Check-Step2-Runtime.ps1" -Phase Post')) {
+            if (-not $bat.Contains($needle)) { throw "Batch entry point is missing: $needle" }
+          }
+          $pre = $bat.IndexOf('-Phase Pre')
+          $install = $bat.IndexOf('Install-ComfyUI-Plugins-Safe.ps1')
+          $post = $bat.IndexOf('-Phase Post')
+          if (-not ($pre -lt $install -and $install -lt $post)) { throw 'Step 2 runtime checks are not ordered pre -> install -> post.' }
