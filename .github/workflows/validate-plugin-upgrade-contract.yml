@@ -35,14 +35,23 @@ jobs:
         run: |
           $scriptText = Get-Content 'step2-plugin-pack/Install-ComfyUI-Plugins-Safe.ps1' -Raw
           foreach ($needle in @(
-            '$targetPythonVersion = "3.13"',
+            '$targetPythonVersion = "3.13.9"',
             '$targetPythonTag = "cp313"',
+            '$targetTorchVersion = "2.12.0+cu130"',
+            '$targetTorchvisionVersion = "0.27.0+cu130"',
+            '$targetTorchaudioVersion = "2.11.0+cu130"',
+            '$targetCudaPrefix = "13.0"',
             '$targetTritonVersion = "3.7.1.post27"',
             '$targetSageVersion = "2.2.0+cu130torch2.10.0andhigher.post6"',
-            'Re-run step1-installer\Start-Installer.bat with Install / Repair first',
+            'Step 2 requires the default PyTorch 2.12 / CUDA 13.0 runtime',
             '--force-reinstall',
-            'Get-PackageVersion',
-            'Acceleration runtime verified'
+            '$copyFailures = New-Object',
+            'Restored previous plugin after copy failure',
+            'Plugin copy failed for:',
+            'Re-validating SageAttention and Triton after plugin dependencies',
+            'Triton/SageAttention import verification failed',
+            'Plugin dependency installation failed for:',
+            'pip check failed after plugin installation'
           )) {
             if (-not $scriptText.Contains($needle)) { throw "Step 2 upgrade contract is missing: $needle" }
           }
@@ -56,9 +65,11 @@ jobs:
             '$requiredSage = "2.2.0+cu130torch2.10.0andhigher.post6"',
             'CUDA 12.6 / PyTorch 2.8 compatibility channel remains usable in step 1',
             'Get-LatestPluginInstallLog',
+            'Get-PluginRunTimestampFromLog',
             'Restore-FailedPluginBackups',
             'Failed to copy plugin ([^:]+):',
             'Dependency installation failed for ',
+            'Never delete',
             'pip check failed after plugin installation',
             'import triton, sageattention'
           )) {
