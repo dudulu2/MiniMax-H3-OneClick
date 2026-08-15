@@ -33,11 +33,16 @@ jobs:
       - name: Validate root orchestration contract
         shell: powershell
         run: |
-          if (-not (Test-Path -LiteralPath '一键安装.bat' -PathType Leaf)) {
+          # Avoid a non-ASCII filename literal in the PowerShell 5.1 runner
+          # script. Identify the root launcher by the helper it invokes instead.
+          $rootBat = Get-ChildItem -LiteralPath . -Filter '*.bat' -File |
+            Where-Object { (Get-Content -LiteralPath $_.FullName -Raw).Contains('OneClick-Install.ps1') } |
+            Select-Object -First 1
+          if (-not $rootBat) {
             throw 'Root one-click BAT entry point is missing.'
           }
 
-          $bat = Get-Content -LiteralPath '一键安装.bat' -Raw
+          $bat = Get-Content -LiteralPath $rootBat.FullName -Raw
           if (-not $bat.Contains('OneClick-Install.ps1')) {
             throw 'Root BAT must launch OneClick-Install.ps1.'
           }
