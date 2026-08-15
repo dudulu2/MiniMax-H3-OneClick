@@ -62,6 +62,16 @@ def is_within(path: Path, root: Path) -> bool:
         return False
 
 
+def is_link_or_junction(path: Path) -> bool:
+    try:
+        if path.is_symlink():
+            return True
+        is_junction = getattr(path, "is_junction", None)
+        return bool(is_junction and is_junction())
+    except OSError:
+        return True
+
+
 def add_candidate(
     result: list[Path],
     seen: set[str],
@@ -70,7 +80,7 @@ def add_candidate(
     destination: Path,
 ) -> None:
     try:
-        if not candidate.exists() or not candidate.is_file() or candidate.is_symlink():
+        if not candidate.exists() or not candidate.is_file() or is_link_or_junction(candidate):
             return
         resolved = candidate.resolve()
         if not is_within(resolved, bundle_root):
@@ -93,12 +103,9 @@ def walk_exact_name(root: Path, name: str) -> Iterable[Path]:
         safe_dirs: list[str] = []
         for directory in dirs:
             child = current_path / directory
-            try:
-                if child.is_symlink():
-                    continue
-                safe_dirs.append(directory)
-            except OSError:
+            if is_link_or_junction(child):
                 continue
+            safe_dirs.append(directory)
         dirs[:] = safe_dirs
         for filename in files:
             if filename.casefold() == name.casefold():
@@ -130,13 +137,28 @@ def local_candidates(bundle_root: Path, relative: str, destination: Path) -> lis
     return result
 
 
+def cleanup_stale_temporary_copies(destination: Path) -> None:
+    try:
+        if not destination.parent.exists():
+            return
+        pattern = f".{destination.name}.local-*.tmp"
+        for stale in destination.parent.glob(pattern):
+            try:
+                stale.unlink()
+            except OSError:
+                pass
+    except OSError:
+        pass
+
+
 def copy_and_verify(candidate: Path, destination: Path, model: dict[str, Any]) -> bool:
     expected_size = int(model["size"])
     try:
-        if candidate.stat().st_size != expected_size:
+        actual_size = candidate.stat().st_size
+        if actual_size != expected_size:
             print(
                 f"Ignoring local model with wrong size: {candidate} "
-                f"({candidate.stat().st_size} != {expected_size})",
+                f"({actual_size} != {expected_size})",
                 flush=True,
             )
             return False
@@ -145,6 +167,7 @@ def copy_and_verify(candidate: Path, destination: Path, model: dict[str, Any]) -
         return False
 
     destination.parent.mkdir(parents=True, exist_ok=True)
+    cleanup_stale_temporary_copies(destination)
     temporary = destination.with_name(f".{destination.name}.local-{uuid.uuid4().hex}.tmp")
     digest = hashlib.sha256()
     copied = 0
@@ -223,7 +246,7 @@ def stage_local_models(
         try:
             if destination.exists() and destination.stat().st_size == int(model["size"]):
                 print(
-                    f"Installed model already has the expected size; leaving it for normal SHA-256 verification: "
+                    "Installed model already has the expected size; leaving it for normal SHA-256 verification: "
                     f"{destination}",
                     flush=True,
                 )
@@ -233,7 +256,10 @@ def stage_local_models(
 
         candidates = local_candidates(bundle_root, str(model["path"]), destination)
         if not candidates:
-            print(f"No bundled candidate found for {model['path']}; network/resume fallback remains available.", flush=True)
+            print(
+                f"No bundled candidate found for {model['path']}; network/resume fallback remains available.",
+                flush=True,
+            )
             continue
 
         for candidate in candidates:
@@ -247,7 +273,10 @@ def stage_local_models(
                 flush=True,
             )
 
-    print(f"Local model staging complete: {staged}/{len(models)} model(s) supplied by the installer package.", flush=True)
+    print(
+        f"Local model staging complete: {staged}/{len(models)} model(s) supplied by the installer package.",
+        flush=True,
+    )
     return staged
 
 
