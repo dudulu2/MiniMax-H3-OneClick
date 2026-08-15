@@ -124,6 +124,8 @@ jobs:
         shell: powershell
         run: |
           & powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File 'step2-plugin-pack/Install-Step2-Dependencies-LocalFirst.ps1'
-          if ($LASTEXITCODE -ne 2) {
-            throw "An empty bundled dependency wheelhouse must request network fallback with exit code 2; got $LASTEXITCODE."
+          $actualExit = $LASTEXITCODE
+          $global:LASTEXITCODE = 0
+          if ($actualExit -ne 2) {
+            throw "An empty bundled dependency wheelhouse must request network fallback with exit code 2; got $actualExit."
           }
