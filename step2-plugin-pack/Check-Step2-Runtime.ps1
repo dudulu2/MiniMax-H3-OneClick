@@ -89,21 +89,22 @@ function Restore-FailedPluginBackups {
 
     foreach ($name in @($PluginNames | Select-Object -Unique)) {
         $destination = Join-Path $targetNodes $name
-        if (Test-Path -LiteralPath $destination) {
-            Remove-Item -LiteralPath $destination -Recurse -Force -ErrorAction SilentlyContinue
+        $backupSource = $null
+        if ($runBackup) {
+            $candidate = Join-Path $runBackup.FullName $name
+            if (Test-Path -LiteralPath $candidate) { $backupSource = $candidate }
         }
 
-        $restored = $false
-        if ($runBackup) {
-            $backupSource = Join-Path $runBackup.FullName $name
-            if (Test-Path -LiteralPath $backupSource) {
-                Move-Item -LiteralPath $backupSource -Destination $destination -Force
-                Write-Host "Restored previous plugin after copy failure: $name"
-                $restored = $true
+        if ($backupSource) {
+            if (Test-Path -LiteralPath $destination) {
+                Remove-Item -LiteralPath $destination -Recurse -Force -ErrorAction SilentlyContinue
             }
-        }
-        if (-not $restored) {
-            Write-Host "No backup from this plugin-install run was available for failed copy: $name"
+            Move-Item -LiteralPath $backupSource -Destination $destination -Force
+            Write-Host "Restored previous plugin from this run's backup: $name"
+        } else {
+            # The main installer may already have restored this plugin. Never delete
+            # a destination unless the matching backup from this exact run exists.
+            Write-Host "No unrestored backup from this plugin-install run remains for: $name"
         }
     }
 }
@@ -140,7 +141,7 @@ try {
             if ($copyMatches.Count -gt 0) {
                 $failedPlugins = @($copyMatches | ForEach-Object { $_.Groups[1].Value.Trim() } | Select-Object -Unique)
                 Restore-FailedPluginBackups -Root $root -PluginNames $failedPlugins -RunTimestamp $runTimestamp
-                [void]$failures.Add("Plugin copy failed and backups from this run were restored where available: $($failedPlugins -join ', ')")
+                [void]$failures.Add("Plugin copy failed; backups from this exact run were restored where still available: $($failedPlugins -join ', ')")
             }
             if ([string]$logText -match 'Dependency installation failed for ' -or [string]$logText -match 'Plugins were copied, but one or more dependency issues remain\.') {
                 [void]$failures.Add("One or more plugin dependency installations failed. See $($latestLog.FullName)")
