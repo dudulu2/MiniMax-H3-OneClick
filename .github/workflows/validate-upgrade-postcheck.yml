@@ -43,6 +43,7 @@ jobs:
           $text = Get-Content 'step1-installer/assets/upgrade_postcheck.ps1' -Raw
           foreach ($needle in @(
             'Ignoring stale ComfyUI PID file entry',
+            'Protected directories were left untouched',
             'Resolve-ComfyEnvironmentResult -Output $output',
             'Final acceleration runtime check',
             'Install-SageAttentionRuntime -Python $environment.Python',
@@ -51,6 +52,53 @@ jobs:
           )) {
             if (-not $text.Contains($needle)) { throw "Upgrade postcheck contract is missing: $needle" }
           }
+
+      - name: Exercise protected-directory clean core refresh
+        shell: powershell
+        run: |
+          function Install-ComfyEnvironment { param([string]$InstallRoot, [string]$BasePython, $Runtime); return [PSCustomObject]@{ ComfyRoot='C:\fake\ComfyUI'; Python='C:\fake\python.exe' } }
+          function Add-Log { param([string]$Message, [string]$Level = 'INFO') }
+          function Set-Stage { param([string]$Text, [int]$Percent = -1) }
+          function Resolve-ComfyEnvironmentResult { param([object[]]$Output); return $Output[0] }
+          function Install-SageAttentionRuntime { param([string]$Python, [string]$InstallRoot) }
+          function Invoke-ProcessChecked { param([string]$FilePath, [string]$Arguments, [string]$WorkingDirectory, [switch]$AllowFailure); return $null }
+
+          . ./step1-installer/assets/upgrade_postcheck.ps1
+
+          $work = Join-Path $env:RUNNER_TEMP 'minimax-protected-refresh-test'
+          Remove-Item -LiteralPath $work -Recurse -Force -ErrorAction SilentlyContinue
+          $install = Join-Path $work 'install'
+          $comfy = Join-Path $install 'ComfyUI'
+          foreach ($dir in @('models','user','custom_nodes','input','output','temp')) {
+            New-Item -ItemType Directory -Force -Path (Join-Path $comfy $dir) | Out-Null
+            ('user-' + $dir) | Set-Content -LiteralPath (Join-Path $comfy ($dir + '\keep.txt')) -Encoding ASCII
+          }
+          'old-main' | Set-Content -LiteralPath (Join-Path $comfy 'main.py') -Encoding ASCII
+          'stale' | Set-Content -LiteralPath (Join-Path $comfy 'old_core.py') -Encoding ASCII
+          'custom-config' | Set-Content -LiteralPath (Join-Path $comfy 'extra_model_paths.yaml') -Encoding ASCII
+
+          $sourceRoot = Join-Path $work 'source'
+          $sourceComfy = Join-Path $sourceRoot 'ComfyUI'
+          foreach ($dir in @('models','user','custom_nodes','input','output','temp')) {
+            New-Item -ItemType Directory -Force -Path (Join-Path $sourceComfy $dir) | Out-Null
+            ('source-' + $dir) | Set-Content -LiteralPath (Join-Path $sourceComfy ($dir + '\keep.txt')) -Encoding ASCII
+            'should-not-be-added' | Set-Content -LiteralPath (Join-Path $sourceComfy ($dir + '\source-only.txt')) -Encoding ASCII
+          }
+          'new-main' | Set-Content -LiteralPath (Join-Path $sourceComfy 'main.py') -Encoding ASCII
+          'new-core' | Set-Content -LiteralPath (Join-Path $sourceComfy 'new_core.py') -Encoding ASCII
+          'source-config' | Set-Content -LiteralPath (Join-Path $sourceComfy 'extra_model_paths.yaml') -Encoding ASCII
+          $zip = Join-Path $work 'ComfyUI-source.zip'
+          Compress-Archive -Path $sourceComfy -DestinationPath $zip -Force
+
+          Sync-ComfyUISource -SourceZip $zip -InstallRoot $install | Out-Null
+          if (Test-Path -LiteralPath (Join-Path $comfy 'old_core.py')) { throw 'Stale core file survived.' }
+          if (-not (Test-Path -LiteralPath (Join-Path $comfy 'new_core.py'))) { throw 'New core file was not deployed.' }
+          foreach ($dir in @('models','user','custom_nodes','input','output','temp')) {
+            $kept = (Get-Content -LiteralPath (Join-Path $comfy ($dir + '\keep.txt')) -Raw).Trim()
+            if ($kept -ne ('user-' + $dir)) { throw "Protected directory $dir was overwritten." }
+            if (Test-Path -LiteralPath (Join-Path $comfy ($dir + '\source-only.txt'))) { throw "Protected directory $dir received staged source content." }
+          }
+          if ((Get-Content -LiteralPath (Join-Path $comfy 'extra_model_paths.yaml') -Raw).Trim() -ne 'custom-config') { throw 'extra_model_paths.yaml was overwritten.' }
 
       - name: Exercise single environment return and final acceleration call
         shell: powershell
