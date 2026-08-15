@@ -4,15 +4,34 @@ Two-step, offline-capable installer package for running a MiniMax H3 (FL2VA vide
 
 The installer prefers compatible local wheels when they are bundled with the package and falls back to cached files, China mirrors, and official package sources only when required. This lets a release package be assembled as either a smaller online installer or a larger full/offline installer without changing the install flow.
 
+## Fastest install
+
+For the normal recommended path, double-click the root-level **`一键安装.bat`** and leave it running.
+
+The root launcher automatically:
+
+1. Runs Step 1 with the recommended hardware profile and the normal default install directory (`D:\MiniMaxH3` when drive D: exists, otherwise `%LOCALAPPDATA%\MiniMaxH3`).
+2. Uses bundled/local Step 1 wheels and caches before any network fallback.
+3. Runs Step 2 automatically after Step 1 succeeds, again preferring the bundled local plugin wheelhouse.
+4. Stops immediately if Step 1 fails, so plugins are never installed into a broken/incomplete runtime.
+5. Shows a final completion dialog when both steps pass, with an option to launch MiniMax H3 immediately.
+6. Shows a failure dialog with the failed stage, exit code, and available log location when something goes wrong.
+
+One-click mode is intentionally conservative: if the default target directory is non-empty but is not marked as an existing MiniMax H3 installation, it refuses to overwrite the directory. Existing valid MiniMax H3 installations are repaired/upgraded in place using the normal Step 1 safeguards.
+
+The original manual entry points remain available for advanced use or troubleshooting.
+
 ## Layout
 
-| Directory | Content |
+| Directory / file | Content |
 |---|---|
+| [`一键安装.bat`](一键安装.bat) | Root two-step launcher: unattended Step 1 -> Step 2 -> final success/failure dialog |
+| [`OneClick-Install.ps1`](OneClick-Install.ps1) | Root orchestration helper used by `一键安装.bat` |
 | [`step1-installer`](step1-installer/) | Core installer: Python 3.13.9 runtime, PyTorch 2.12 / CUDA 13.0 (with CUDA 12.6 compatibility fallback), ComfyUI v0.32.0, H3 model downloads, hardware profiles, SageAttention 2.2 + Triton 3.7.1 wheels for the default CUDA 13 runtime, cancellation UI, existing-install repair safeguards, and GitHub Actions validation |
 | [`step2-plugin-pack`](step2-plugin-pack/) | Plugin pack: installs or updates 12 ComfyUI custom nodes (Manager, VideoHelperSuite, rgthree, crystools, Essentials, H3 audio/block-cache/AVCache/TE-Speed, SageAttention-MiniMaxH3-Safe), keeps timestamped plugin backups, supports an offline plugin-dependency wheelhouse, and repairs the required SageAttention/Triton versions in an existing default-runtime step-1 install |
-| `.github/workflows` | CI validation for installer/runtime/plugin contracts, including local-wheel-first ordering in both steps |
+| `.github/workflows` | CI validation for installer/runtime/plugin contracts, including local-wheel-first ordering and the root one-click orchestration path |
 
-## Install order
+## Manual install order
 
 1. Download this repository (GitHub zip export works — no git required).
 2. Run step 1: double-click `step1-installer/Start-Installer.bat`.
@@ -49,7 +68,7 @@ Put ordinary plugin dependency wheels in:
 
 `step2-plugin-pack/wheels/dependencies/`
 
-`Install-Plugins-Safe.bat` now runs `Install-Step2-Dependencies-LocalFirst.ps1` after runtime preflight and before the main plugin installer. It first tries every managed plugin requirement completely offline with `--no-index --find-links`. The validated versions are recorded in `step2-plugin-pack/step2-wheel-lock.txt`.
+`Install-Plugins-Safe.bat` runs `Install-Step2-Dependencies-LocalFirst.ps1` after runtime preflight and before the main plugin installer. It first tries every managed plugin requirement completely offline with `--no-index --find-links`. The validated versions are recorded in `step2-plugin-pack/step2-wheel-lock.txt`.
 
 The real-machine wheelhouse captured on 2026-08-15 contains **52 wheels / about 208.6 MiB** for Windows x64 / Python 3.13.9. If `step2-plugin-pack/step2-wheel-sha256.txt` is present, the helper verifies the listed hashes before using the wheelhouse. If local wheels are missing, incomplete, incompatible, or fail verification, Step 2 continues with the configured China mirror and then official PyPI.
 
