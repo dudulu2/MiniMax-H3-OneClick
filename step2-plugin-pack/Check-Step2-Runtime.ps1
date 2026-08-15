@@ -68,17 +68,23 @@ function Get-LatestPluginInstallLog {
         Select-Object -First 1)
 }
 
+function Get-PluginRunTimestampFromLog {
+    param([IO.FileInfo]$LogFile)
+    if (-not $LogFile) { return "" }
+    $match = [regex]::Match($LogFile.Name, '^plugin-install-safe-(\d{8}-\d{6})\.log$')
+    if (-not $match.Success) { return "" }
+    return $match.Groups[1].Value
+}
+
 function Restore-FailedPluginBackups {
-    param([string]$Root, [string[]]$PluginNames)
+    param([string]$Root, [string[]]$PluginNames, [string]$RunTimestamp)
 
     if (-not $PluginNames -or $PluginNames.Count -eq 0) { return }
     $targetNodes = Join-Path $Root "ComfyUI\custom_nodes"
-    $backupParent = Join-Path $Root "plugin-backups"
-    $latestBackup = $null
-    if (Test-Path -LiteralPath $backupParent) {
-        $latestBackup = Get-ChildItem -LiteralPath $backupParent -Directory -ErrorAction SilentlyContinue |
-            Sort-Object LastWriteTime -Descending |
-            Select-Object -First 1
+    $runBackup = $null
+    if (-not [string]::IsNullOrWhiteSpace($RunTimestamp)) {
+        $candidate = Join-Path $Root ("plugin-backups\" + $RunTimestamp)
+        if (Test-Path -LiteralPath $candidate -PathType Container) { $runBackup = Get-Item -LiteralPath $candidate }
     }
 
     foreach ($name in @($PluginNames | Select-Object -Unique)) {
@@ -88,8 +94,8 @@ function Restore-FailedPluginBackups {
         }
 
         $restored = $false
-        if ($latestBackup) {
-            $backupSource = Join-Path $latestBackup.FullName $name
+        if ($runBackup) {
+            $backupSource = Join-Path $runBackup.FullName $name
             if (Test-Path -LiteralPath $backupSource) {
                 Move-Item -LiteralPath $backupSource -Destination $destination -Force
                 Write-Host "Restored previous plugin after copy failure: $name"
@@ -97,7 +103,7 @@ function Restore-FailedPluginBackups {
             }
         }
         if (-not $restored) {
-            Write-Host "No previous plugin backup was available for failed copy: $name"
+            Write-Host "No backup from this plugin-install run was available for failed copy: $name"
         }
     }
 }
@@ -128,12 +134,13 @@ try {
         $failures = New-Object System.Collections.Generic.List[string]
         $latestLog = Get-LatestPluginInstallLog -Root $root
         if ($latestLog) {
+            $runTimestamp = Get-PluginRunTimestampFromLog -LogFile $latestLog
             $logText = Get-Content -LiteralPath $latestLog.FullName -Raw -ErrorAction SilentlyContinue
             $copyMatches = @([regex]::Matches([string]$logText, 'Failed to copy plugin ([^:]+):'))
             if ($copyMatches.Count -gt 0) {
                 $failedPlugins = @($copyMatches | ForEach-Object { $_.Groups[1].Value.Trim() } | Select-Object -Unique)
-                Restore-FailedPluginBackups -Root $root -PluginNames $failedPlugins
-                [void]$failures.Add("Plugin copy failed and previous backups were restored where available: $($failedPlugins -join ', ')")
+                Restore-FailedPluginBackups -Root $root -PluginNames $failedPlugins -RunTimestamp $runTimestamp
+                [void]$failures.Add("Plugin copy failed and backups from this run were restored where available: $($failedPlugins -join ', ')")
             }
             if ([string]$logText -match 'Dependency installation failed for ' -or [string]$logText -match 'Plugins were copied, but one or more dependency issues remain\.') {
                 [void]$failures.Add("One or more plugin dependency installations failed. See $($latestLog.FullName)")
