@@ -55,6 +55,10 @@ jobs:
             'Install-Plugins-Safe.bat --no-pause',
             '$env:MINIMAX_H3_ROOT = $installRoot',
             'Get-LatestStep2Log',
+            'Test-OneClickExistingInstallRoot',
+            'Get-OneClickFixedDrives',
+            '[IO.DriveType]::Fixed',
+            'Multiple MiniMax H3 installations were detected',
             '[Windows.Forms.MessageBox]::Show'
           )) {
             if (-not $root.Contains($needle)) { throw "One-click orchestration contract is missing: $needle" }
@@ -74,6 +78,107 @@ jobs:
           )) {
             if (-not $step2Bat.Contains($needle)) { throw "Step 2 unattended contract is missing: $needle" }
           }
+
+      - name: Exercise safe install-root selection on Windows PowerShell 5.1
+        shell: powershell
+        run: |
+          $tokens = $null
+          $errors = $null
+          $ast = [Management.Automation.Language.Parser]::ParseFile(
+            (Resolve-Path 'OneClick-Install.ps1'),
+            [ref]$tokens,
+            [ref]$errors
+          )
+          if ($errors.Count -gt 0) { throw 'Could not parse OneClick-Install.ps1.' }
+
+          foreach ($name in @('Test-OneClickExistingInstallRoot','Resolve-OneClickInstallRoot')) {
+            $functionAst = $ast.FindAll({
+              param($node)
+              $node -is [Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -eq $name
+            }, $true) | Select-Object -First 1
+            if (-not $functionAst) { throw "Function was not found: $name" }
+            Invoke-Expression $functionAst.Extent.Text
+          }
+          function Write-OneClickLog { param([string]$Message, [string]$Level = 'INFO') }
+
+          function New-FakeDrive {
+            param([string]$Name, [string]$Root, [int64]$Free)
+            return [PSCustomObject]@{
+              Name = $Name
+              RootDirectory = [PSCustomObject]@{ FullName = $Root }
+              AvailableFreeSpace = $Free
+            }
+          }
+          function New-ValidInstall {
+            param([string]$DriveRoot)
+            $root = Join-Path $DriveRoot 'MiniMaxH3'
+            New-Item -ItemType Directory -Force -Path (Join-Path $root 'ComfyUI') | Out-Null
+            New-Item -ItemType Directory -Force -Path (Join-Path $root 'runtime\venv\Scripts') | Out-Null
+            'x' | Set-Content -LiteralPath (Join-Path $root 'ComfyUI\main.py') -Encoding ASCII
+            'x' | Set-Content -LiteralPath (Join-Path $root 'runtime\venv\Scripts\python.exe') -Encoding ASCII
+            return [IO.Path]::GetFullPath($root)
+          }
+
+          $oldExplicit = $env:MINIMAX_H3_ROOT
+          $env:MINIMAX_H3_ROOT = $null
+          try {
+            $work = Join-Path $env:RUNNER_TEMP 'minimax-root-selection'
+            Remove-Item -LiteralPath $work -Recurse -Force -ErrorAction SilentlyContinue
+            $cRoot = Join-Path $work 'C-drive'
+            $dRoot = Join-Path $work 'D-drive'
+            $eRoot = Join-Path $work 'E-drive'
+            $fRoot = Join-Path $work 'F-drive'
+            $local = Join-Path $work 'LocalAppData'
+            foreach ($path in @($cRoot,$dRoot,$eRoot,$fRoot,$local)) { New-Item -ItemType Directory -Force -Path $path | Out-Null }
+
+            $c = New-FakeDrive -Name 'C:\' -Root $cRoot -Free 900GB
+            $d = New-FakeDrive -Name 'D:\' -Root $dRoot -Free 100GB
+            $e = New-FakeDrive -Name 'E:\' -Root $eRoot -Free 200GB
+            $f = New-FakeDrive -Name 'F:\' -Root $fRoot -Free 400GB
+
+            # Existing E: installation must win even though D: exists.
+            $expectedE = New-ValidInstall -DriveRoot $eRoot
+            $actual = Resolve-OneClickInstallRoot -FixedDrives @($c,$d,$e) -SystemDriveRoot 'C:\' -LocalAppDataRoot $local
+            if ([IO.Path]::GetFullPath($actual) -ne $expectedE) { throw "Existing E drive install was not selected: $actual" }
+
+            # Two valid installations are ambiguous and must never be guessed.
+            $null = New-ValidInstall -DriveRoot $dRoot
+            $ambiguousRejected = $false
+            try {
+              $null = Resolve-OneClickInstallRoot -FixedDrives @($c,$d,$e) -SystemDriveRoot 'C:\' -LocalAppDataRoot $local
+            } catch {
+              if ($_.Exception.Message -like '*Multiple MiniMax H3 installations were detected*') { $ambiguousRejected = $true }
+            }
+            if (-not $ambiguousRejected) { throw 'Multiple existing installations were not rejected.' }
+
+            Remove-Item -LiteralPath (Join-Path $dRoot 'MiniMaxH3') -Recurse -Force
+            Remove-Item -LiteralPath (Join-Path $eRoot 'MiniMaxH3') -Recurse -Force
+
+            # Fresh install with D: keeps the historical D: preference.
+            $actual = Resolve-OneClickInstallRoot -FixedDrives @($c,$d,$e,$f) -SystemDriveRoot 'C:\' -LocalAppDataRoot $local
+            $expected = Join-Path $dRoot 'MiniMaxH3'
+            if ([IO.Path]::GetFullPath($actual) -ne [IO.Path]::GetFullPath($expected)) { throw "D drive fresh-install preference failed: $actual" }
+
+            # Without D:, choose the roomiest fixed non-system disk (F: here).
+            $actual = Resolve-OneClickInstallRoot -FixedDrives @($c,$e,$f) -SystemDriveRoot 'C:\' -LocalAppDataRoot $local
+            $expected = Join-Path $fRoot 'MiniMaxH3'
+            if ([IO.Path]::GetFullPath($actual) -ne [IO.Path]::GetFullPath($expected)) { throw "Non-system fresh-install selection failed: $actual" }
+
+            # Only the system disk available -> LocalAppData fallback.
+            $actual = Resolve-OneClickInstallRoot -FixedDrives @($c) -SystemDriveRoot 'C:\' -LocalAppDataRoot $local
+            $expected = Join-Path $local 'MiniMaxH3'
+            if ([IO.Path]::GetFullPath($actual) -ne [IO.Path]::GetFullPath($expected)) { throw "LocalAppData fallback failed: $actual" }
+
+            # Explicit target always wins; Step 1 later applies the non-empty-folder safety guard.
+            $explicit = Join-Path $work 'ExplicitTarget'
+            $env:MINIMAX_H3_ROOT = $explicit
+            $actual = Resolve-OneClickInstallRoot -FixedDrives @($c,$d,$e,$f) -SystemDriveRoot 'C:\' -LocalAppDataRoot $local
+            if ([IO.Path]::GetFullPath($actual) -ne [IO.Path]::GetFullPath($explicit)) { throw "Explicit MINIMAX_H3_ROOT was not honored: $actual" }
+          } finally {
+            $env:MINIMAX_H3_ROOT = $oldExplicit
+          }
+
+          Write-Host "PowerShell $($PSVersionTable.PSVersion): safe install-root selection passed."
 
       - name: Validate Step 1 unattended patch contract
         shell: powershell
