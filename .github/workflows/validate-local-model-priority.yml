@@ -1,0 +1,223 @@
+name: Validate local model priority
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  validate-local-model-priority:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+
+      - name: Parse local model helpers
+        shell: powershell
+        run: |
+          $tokens = $null
+          $errors = $null
+          [void][Management.Automation.Language.Parser]::ParseFile(
+            (Resolve-Path 'step1-installer/assets/local_model_bundle.ps1'),
+            [ref]$tokens,
+            [ref]$errors
+          )
+          if ($errors.Count -gt 0) {
+            $errors | Format-List | Out-String | Write-Error
+            exit 1
+          }
+          python -m py_compile step1-installer/assets/local_model_bundle.py
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Validate local-before-network wrapper contract
+        shell: powershell
+        run: |
+          $loader = Get-Content 'step1-installer/assets/local_dependency_wheelhouse.ps1' -Raw
+          foreach ($needle in @(
+            'local_model_bundle.ps1',
+            '. $localModelBundleScript'
+          )) {
+            if (-not $loader.Contains($needle)) { throw "Step 1 local-assets loader is missing: $needle" }
+          }
+
+          $wrapper = Get-Content 'step1-installer/assets/local_model_bundle.ps1' -Raw
+          foreach ($needle in @(
+            'local_model_bundle.py',
+            'Split-Path -Parent $script:InstallerRoot',
+            'Invoke-ProcessChecked $Python',
+            'InstallH3ModelsBeforeLocalModelBundle @PSBoundParameters'
+          )) {
+            if (-not $wrapper.Contains($needle)) { throw "Local model wrapper contract is missing: $needle" }
+          }
+          $local = $wrapper.IndexOf('Invoke-ProcessChecked $Python')
+          $normal = $wrapper.IndexOf('InstallH3ModelsBeforeLocalModelBundle @PSBoundParameters')
+          if ($local -lt 0 -or $normal -lt 0 -or $local -ge $normal) {
+            throw 'Local model staging must execute before the normal network/resume downloader.'
+          }
+
+          $python = Get-Content 'step1-installer/assets/local_model_bundle.py' -Raw
+          foreach ($needle in @(
+            'step1-installer" / "models"',
+            'os.walk(root, followlinks=False)',
+            'actual_hash != str(model["sha256"]).upper()',
+            'os.replace(temporary, destination)',
+            'network/resume fallback remains available'
+          )) {
+            if (-not $python.Contains($needle)) { throw "Local model safety contract is missing: $needle" }
+          }
+
+      - name: Exercise verified local model staging and network avoidance
+        shell: powershell
+        run: |
+          @'
+          import hashlib
+          import importlib.util
+          import json
+          import shutil
+          import subprocess
+          import sys
+          import tempfile
+          import types
+          from pathlib import Path
+
+          repo = Path.cwd()
+          helper = repo / "step1-installer" / "assets" / "local_model_bundle.py"
+          downloader_path = repo / "step1-installer" / "assets" / "download_models.py"
+          work = Path(tempfile.mkdtemp(prefix="minimax-local-model-test-"))
+          try:
+              bundle = work / "bundle"
+              comfy = work / "installed" / "ComfyUI"
+              catalog_path = work / "catalog.json"
+              profiles_path = work / "profiles.json"
+
+              payloads = {
+                  "diffusion_models/tiny_diffusion.safetensors": b"verified-local-diffusion",
+                  "text_encoders/tiny_text.safetensors": b"verified-local-text",
+                  "vae/tiny_video.safetensors": b"verified-local-video-vae",
+                  "vae/tiny_audio.safetensors": b"verified-local-audio-vae",
+              }
+              catalog = []
+              for relative, payload in payloads.items():
+                  catalog.append(
+                      {
+                          "path": relative,
+                          "size": len(payload),
+                          "sha256": hashlib.sha256(payload).hexdigest(),
+                      }
+                  )
+              catalog_path.write_text(json.dumps(catalog), encoding="utf-8")
+              profiles_path.write_text(
+                  json.dumps(
+                      {
+                          "profiles": [
+                              {
+                                  "id": "test",
+                                  "label": "test",
+                                  "diffusion_model": "diffusion_models/tiny_diffusion.safetensors",
+                                  "text_encoder": "text_encoders/tiny_text.safetensors",
+                                  "video_vae": "vae/tiny_video.safetensors",
+                                  "audio_vae": "vae/tiny_audio.safetensors",
+                              }
+                          ]
+                      }
+                  ),
+                  encoding="utf-8",
+              )
+
+              # First preferred candidate is deliberately corrupt but same-size.
+              bad = bundle / "step1-installer" / "models" / "diffusion_models" / "tiny_diffusion.safetensors"
+              bad.parent.mkdir(parents=True, exist_ok=True)
+              good_diff = payloads["diffusion_models/tiny_diffusion.safetensors"]
+              bad.write_bytes(b"X" * len(good_diff))
+
+              # A later exact-name candidate is valid; the helper must continue
+              # after rejecting the corrupt preferred copy.
+              fallback = bundle / "already-downloaded" / "tiny_diffusion.safetensors"
+              fallback.parent.mkdir(parents=True, exist_ok=True)
+              fallback.write_bytes(good_diff)
+
+              # Exercise both recommended layout and recursive compatibility lookup.
+              video = bundle / "step1-installer" / "models" / "vae" / "tiny_video.safetensors"
+              audio = bundle / "step1-installer" / "models" / "vae" / "tiny_audio.safetensors"
+              text = bundle / "misc" / "nested" / "tiny_text.safetensors"
+              for path, key in (
+                  (video, "vae/tiny_video.safetensors"),
+                  (audio, "vae/tiny_audio.safetensors"),
+                  (text, "text_encoders/tiny_text.safetensors"),
+              ):
+                  path.parent.mkdir(parents=True, exist_ok=True)
+                  path.write_bytes(payloads[key])
+
+              # Preserve a resumable prefix until a local candidate is fully verified.
+              destination = comfy / "models" / "diffusion_models" / "tiny_diffusion.safetensors"
+              destination.parent.mkdir(parents=True, exist_ok=True)
+              destination.write_bytes(b"partial-network-prefix")
+              stale = destination.parent / ".tiny_diffusion.safetensors.local-dead.tmp"
+              stale.write_bytes(b"stale")
+
+              proc = subprocess.run(
+                  [
+                      sys.executable,
+                      str(helper),
+                      "--bundle-root", str(bundle),
+                      "--comfy-root", str(comfy),
+                      "--catalog", str(catalog_path),
+                      "--profiles", str(profiles_path),
+                      "--profile", "test",
+                  ],
+                  text=True,
+                  capture_output=True,
+              )
+              print(proc.stdout)
+              print(proc.stderr, file=sys.stderr)
+              if proc.returncode != 0:
+                  raise SystemExit(proc.returncode)
+
+              for relative, payload in payloads.items():
+                  installed = comfy / "models" / Path(*relative.split("/"))
+                  assert installed.read_bytes() == payload, f"local staging mismatch: {relative}"
+              assert bad.read_bytes() == b"X" * len(good_diff), "corrupt source candidate was modified"
+              assert not stale.exists(), "stale interrupted local-copy temporary file survived"
+
+              # Import the normal downloader with a requests stub that explodes on
+              # any network session creation. Valid staged files must return before
+              # model_sources/probe/download paths are reached.
+              requests_stub = types.ModuleType("requests")
+              class NoNetworkSession:
+                  def __init__(self, *args, **kwargs):
+                      raise AssertionError("network access was attempted for a valid local model")
+              requests_stub.Session = NoNetworkSession
+              requests_stub.Response = object
+              sys.modules["requests"] = requests_stub
+
+              spec = importlib.util.spec_from_file_location("download_models_under_test", downloader_path)
+              downloader = importlib.util.module_from_spec(spec)
+              assert spec.loader is not None
+              spec.loader.exec_module(downloader)
+              profile = downloader.resolve_profile(profiles_path, "test")
+              models = downloader.resolve_models(catalog_path, profile)
+              status = work / "status.json"
+              for index, model in enumerate(models):
+                  downloader.download_model(
+                      comfy,
+                      status,
+                      models,
+                      "test",
+                      index,
+                      model,
+                      "official-first",
+                      "auto",
+                  )
+              print("Verified local models remained network-free in the normal downloader.")
+          finally:
+              shutil.rmtree(work, ignore_errors=True)
+          '@ | Set-Content -LiteralPath $env:RUNNER_TEMP\test-local-models.py -Encoding UTF8
+
+          python $env:RUNNER_TEMP\test-local-models.py
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
