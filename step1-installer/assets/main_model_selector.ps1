@@ -302,18 +302,19 @@ function Install-WorkflowAndLauncher {
 
     & $script:InstallWorkflowAndLauncherBeforeMainModel @PSBoundParameters
 
-    # The browser autoload key includes the selected main model. Changing only the
-    # diffusion model therefore triggers one fresh load of the newly generated
-    # workflow instead of leaving a stale canvas that points to the old model.
+    # The browser autoload key includes the selected diffusion model and text
+    # encoder. Changing either model therefore forces one fresh load of the newly
+    # generated workflow instead of leaving a stale canvas from an older install.
     try {
         $autoloadPath = Join-Path $ComfyRoot "custom_nodes\minimax_h3_workflow_autoload\web\autoload.js"
         if (Test-Path -LiteralPath $autoloadPath) {
             $autoload = Get-Content -LiteralPath $autoloadPath -Raw
             $modelToken = [IO.Path]::GetFileNameWithoutExtension((Split-Path -Leaf ([string]$Profile.diffusion_model))) -replace '[^A-Za-z0-9_.-]', '-'
-            $newKey = "minimax-h3-workflow-$($Profile.id)-$modelToken-v3"
+            $textToken = [IO.Path]::GetFileNameWithoutExtension((Split-Path -Leaf ([string]$Profile.text_encoder))) -replace '[^A-Za-z0-9_.-]', '-'
+            $newKey = "minimax-h3-workflow-$($Profile.id)-$modelToken-$textToken-v4"
             $autoload = [regex]::Replace($autoload, 'minimax-h3-workflow-[^"'']+', $newKey, 1)
             $autoload | Set-Content -LiteralPath $autoloadPath -Encoding UTF8
-            Add-Log "Workflow autoload key updated for selected main model: $newKey"
+            Add-Log "Workflow autoload key updated for selected model set: $newKey"
         }
     } catch {
         Add-Log "Could not refresh the model-specific workflow autoload key: $($_.Exception.Message)" "WARN"
