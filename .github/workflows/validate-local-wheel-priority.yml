@@ -112,11 +112,11 @@ jobs:
             if (-not $bat.Contains($needle)) { throw "Step 2 batch local-wheel contract is missing: $needle" }
           }
 
-          $pre = $bat.IndexOf('-Phase Pre')
-          $local = $bat.IndexOf('Install-Step2-Dependencies-LocalFirst.ps1')
-          $install = $bat.IndexOf('Install-ComfyUI-Plugins-Safe.ps1')
-          $post = $bat.IndexOf('-Phase Post')
-          if (-not ($pre -lt $local -and $local -lt $install -and $install -lt $post)) {
+          $pre = $bat.IndexOf('Check-Step2-Runtime.ps1" -Phase Pre')
+          $local = $bat.IndexOf('%~dp0Install-Step2-Dependencies-LocalFirst.ps1"', $pre + 1)
+          $install = $bat.IndexOf('%~dp0Install-ComfyUI-Plugins-Safe.ps1"', $local + 1)
+          $post = $bat.IndexOf('Check-Step2-Runtime.ps1" -Phase Post', $install + 1)
+          if ($pre -lt 0 -or $local -lt 0 -or $install -lt 0 -or $post -lt 0 -or -not ($pre -lt $local -and $local -lt $install -and $install -lt $post)) {
             throw 'Step 2 order must be preflight -> local wheelhouse -> plugin installer -> postflight.'
           }
 
