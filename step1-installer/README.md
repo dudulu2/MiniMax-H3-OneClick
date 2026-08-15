@@ -18,9 +18,11 @@ The installer chooses the highest-VRAM NVIDIA GPU when more than one GPU is pres
 
 | Profile | Intended hardware | Diffusion / text encoder | Default output | Minimum free disk |
 |---|---|---|---|---:|
-| Compatibility | RTX 3060/4060 and other 8–16 GB cards; 16–32 GB RAM | Pruned INT8 ConvRot / NVFP4 AWQ | 608x352, 5 seconds, 24 fps | 60 GiB |
-| Balanced 4090/5090 | RTX 4090 or RTX 5090 with at least 32 GB RAM | Pruned FP8 Scaled / NVFP4 AWQ | 864x480, 5 seconds, 24 fps | 60 GiB |
+| Compatibility | RTX 3060/4060 and other 8–16 GB cards; 16–32 GB RAM | Pruned INT8 ConvRot / INT8 ConvRot | 608x352, 5 seconds, 24 fps | 60 GiB |
+| Balanced 4090/5090 | RTX 4090 or RTX 5090 with at least 32 GB RAM | Pruned FP8 Scaled / INT8 ConvRot | 864x480, 5 seconds, 24 fps | 60 GiB |
 | Quality 64 GB | 24 GB+ VRAM and at least 64 GB RAM | Pruned BF16 / INT8 ConvRot | 960x544, 5 seconds, 24 fps | 90 GiB |
+
+All profiles now use `qwen3vl_32b_minimax_h3_int8_convrot.safetensors` as the default text encoder. Re-running the installer on an older installation downloads and verifies the INT8 encoder when needed, regenerates the profile workflow, and refreshes the browser autoload key so an older NVFP4-based canvas is not silently reused.
 
 `Auto` recommends Compatibility for normal 8–16 GB cards and for RTX 30-series cards with 32 GB RAM. It recommends Balanced for FP8-capable RTX 40/50-series cards with 24 GB+ VRAM and 32–63 GB RAM, and Quality for any supported 24 GB+ card with at least 64 GB RAM. A manually selected profile is checked against its own VRAM, RAM, and disk requirements before installation can start.
 
@@ -39,9 +41,11 @@ The installer verifies the exact package versions, CUDA availability, CUDA runti
 
 ## Upgrade an existing installation
 
-Select the same installation directory and click **Install / Repair**. The installer preserves models, user workflows, logs, launchers, PyTorch wheel cache, and partial model downloads. If the installed PyTorch runtime does not match the selected runtime, the old Torch/Torchvision/TorchAudio packages are removed and the matching set is installed. ComfyUI requirements are then refreshed with `--upgrade --upgrade-strategy only-if-needed`, followed by `pip check` and a CUDA verification run.
+Select the same installation directory and click **Install / Repair**. The installer preserves models, user workflows, logs, launchers, PyTorch wheel cache, and partial model downloads. If the private Python runtime is older than 3.13, its virtual environment is removed and rebuilt against Python 3.13.9. If the installed PyTorch runtime does not match the selected runtime, the old Torch/Torchvision/TorchAudio packages are removed and the matching set is installed. ComfyUI requirements are then refreshed with `--upgrade --upgrade-strategy only-if-needed`, followed by `pip check` and a CUDA verification run.
 
 Existing RTX 30/40/50-series installations that are still on the older runtime are upgraded to PyTorch 2.12 CUDA 13.0 by default unless the CUDA 12.6 compatibility runtime is selected manually.
+
+The ComfyUI source archive is overlaid with `Expand-Archive -Force`. This updates bundled files while preserving `models/`, `user/`, logs, downloads, and other installation data. It is intentionally a repair/update operation rather than a destructive directory mirror, so obsolete files that disappeared upstream are not automatically deleted.
 
 ## Local and cached PyTorch wheels
 
@@ -62,7 +66,7 @@ The smaller PyTorch Python dependencies such as NumPy, Pillow, NetworkX, Jinja2,
 - Selected PyTorch CUDA runtime
 - Triton 3.7.1 and SageAttention 2.2 installed from bundled wheels when present
 - One selected FL2VA diffusion model
-- One selected Qwen3-VL 32B MiniMax H3 text encoder
+- Qwen3-VL 32B MiniMax H3 INT8 ConvRot text encoder
 - MiniMax H3 video and audio VAEs
 - A generated workflow whose model names and resolution match the selected profile
 - `Start MiniMax H3.bat`, `Stop MiniMax H3.bat`, logs, manifest, and optional desktop shortcut
@@ -95,4 +99,4 @@ PyTorch wheel downloads are stored in the installation's `downloads/torch-wheels
 7. Use `Start MiniMax H3.bat` or the desktop shortcut.
 8. Use `Stop MiniMax H3.bat` before shutting down or moving the installation.
 
-The full 40–68 GiB model downloads and generation performance still require end-to-end validation on representative RTX 3060, RTX 4090, and RTX 5090 systems before this branch is treated as a final release.
+The full 50–68 GiB model downloads and generation performance still require end-to-end validation on representative RTX 3060, RTX 4090, and RTX 5090 systems before this branch is treated as a final release.
