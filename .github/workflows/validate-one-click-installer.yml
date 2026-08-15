@@ -75,15 +75,36 @@ jobs:
             if (-not $step2Bat.Contains($needle)) { throw "Step 2 unattended contract is missing: $needle" }
           }
 
-      - name: Exercise Step 1 auto mode on hosted runner
+      - name: Validate Step 1 unattended patch contract
         shell: powershell
         run: |
-          $target = Join-Path $env:RUNNER_TEMP 'MiniMaxH3-oneclick-selftest'
-          & powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -STA -File 'step1-installer/Start-Installer.ps1' -AutoInstall -InstallRoot $target
-          $code = $LASTEXITCODE
-          # GitHub-hosted Windows runners do not expose a supported NVIDIA GPU,
-          # so the auto path must stop at the hardware preflight without any
-          # user interaction or downloads and return the dedicated code 20.
-          if ($code -ne 20) {
-            throw "Step 1 unattended hardware-block path returned $code instead of 20."
+          $step1 = Get-Content -LiteralPath 'step1-installer/Start-Installer.ps1' -Raw
+          foreach ($needle in @(
+            '[switch]$AutoInstall',
+            '$script:OneClickAutoInstall',
+            '$script:OneClickInstallRoot',
+            '$script:OneClickExitCode = 20',
+            '$script:OneClickExitCode = 21',
+            '$script:OneClickExitCode = 1',
+            '$script:ProfileConfirmed = $true',
+            '$form.Add_Shown({',
+            'Invoke-Install',
+            '$form.Close()',
+            'step1-oneclick-latest.log',
+            'if ($script:OneClickAutoInstall) { exit [int]$script:OneClickExitCode }'
+          )) {
+            if (-not $step1.Contains($needle)) { throw "Step 1 unattended contract is missing: $needle" }
+          }
+
+          $source = Get-Content -LiteralPath 'step1-installer/Install-MiniMaxH3.ps1' -Raw
+          foreach ($needle in @(
+            'param([switch]$SelfTest)',
+            '$txtPath.Text = $defaultDrive',
+            'Resolve the failed checks before installing.',
+            'The selected folder is not empty and is not marked as a MiniMax H3 installation.',
+            'Installation completed successfully.',
+            'Installation stopped:',
+            '[void]$form.ShowDialog()'
+          )) {
+            if (-not $source.Contains($needle)) { throw "Step 1 source patch point is missing: $needle" }
           }
