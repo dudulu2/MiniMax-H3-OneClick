@@ -3,7 +3,10 @@ $script:InstallComfyEnvironmentBeforeUpgradePostCheck = (Get-Command Install-Com
 function Get-MiniMaxRunningProcessesForUpgrade {
     param([string]$InstallRoot)
 
-    $matches = New-Object System.Collections.Generic.List[object]
+    # Keep this as a native PowerShell array. Windows PowerShell 5.1 can throw
+    # PSToObjectArrayBinder "parameter type mismatch" when @() is used to
+    # convert a generic List[object] at the WinForms click-handler boundary.
+    $matches = @()
     $seen = @{}
     $pidFile = Join-Path $InstallRoot "runtime\comfyui.pid"
     if (Test-Path -LiteralPath $pidFile) {
@@ -20,7 +23,7 @@ function Get-MiniMaxRunningProcessesForUpgrade {
                     $belongsToInstall = $false
                 }
                 if ($belongsToInstall) {
-                    [void]$matches.Add($process)
+                    $matches += $process
                     $seen[[int]$process.Id] = $true
                 } else {
                     Add-Log "Ignoring stale ComfyUI PID file entry $pidValue because that process does not belong to this installation." "WARN"
@@ -33,14 +36,14 @@ function Get-MiniMaxRunningProcessesForUpgrade {
         if ($seen.ContainsKey([int]$process.Id)) { continue }
         try {
             if ($process.Path -and $process.Path.StartsWith($InstallRoot, [StringComparison]::OrdinalIgnoreCase)) {
-                [void]$matches.Add($process)
+                $matches += $process
                 $seen[[int]$process.Id] = $true
             }
         } catch {
             # Ignore processes whose executable path cannot be inspected.
         }
     }
-    return @($matches)
+    return $matches
 }
 
 function Sync-ComfyUISource {
