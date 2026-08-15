@@ -80,7 +80,7 @@ New-Item -ItemType Directory -Force -Path $logRoot | Out-Null
 
 function Write-Log {
     param([string]$Message, [string]$Level = "INFO")
-    $line = "[{0}] [{1}] {2" -f (Get-Date -Format "HH:mm:ss"), $Level, $Message
+    $line = "[{0}] [{1}] {2}" -f (Get-Date -Format "HH:mm:ss"), $Level, $Message
     Write-Host $line
     Add-Content -LiteralPath $logPath -Value $line -Encoding UTF8
 }
